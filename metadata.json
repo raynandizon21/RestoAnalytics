@@ -1,0 +1,6 @@
+{
+  "name": "3Core - Multi-Branch Flutter POS & Financial Analytics",
+  "description": "Mobile-first auto-responsive restaurant owner app built with Flutter Material 3 / Cupertino styling. Features real-time multi-branch financial comparison matrix, MoM window analytics, main expenses breakdown, menu item profit analysis, and AI advisor.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
