@@ -65,7 +65,7 @@ function periodLabel(start: string, end: string) {
 // ─── Start Server ───
 async function startServer() {
   const app = express();
-  const PORT = 3000;
+  const PORT = Number(process.env.PORT) || 2998;
   app.use(express.json());
 
   let aiClient: GoogleGenAI | null = null;
@@ -419,6 +419,8 @@ async function startServer() {
       `;
 
       // Params: menu (base) + room header (base) + room category items (base)
+      // LIMIT must be inlined — mysql2 prepared stmts reject LIMIT ?
+      const safeLimit = Math.min(Math.max(1, Math.floor(limit)), 100);
       const params = [...baseParams, ...baseParams, ...baseParams];
       const query = `
         SELECT menu_id, MENU_NAME, total_quantity, total_revenue, unit_price, branch_id, branch_name
@@ -428,9 +430,8 @@ async function startServer() {
           ${roomChargeQuery}
         ) combined
         ORDER BY total_revenue DESC
-        LIMIT ?
+        LIMIT ${safeLimit}
       `;
-      params.push(limit);
 
       const [rows] = await pool.execute(query, params);
       res.json({ success: true, data: rows });

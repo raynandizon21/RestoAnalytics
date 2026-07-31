@@ -281,9 +281,8 @@ export const SalesAnalytics: React.FC = () => {
     dayAvgs: Array<{ name: string; avg: number }>;
   }>;
 
-  const weekdayRows = selectedBranch === 'all'
-    ? branchWeakDays
-    : branchWeakDays.filter(bw => String(bw.branch.branch.id) === String(selectedBranch));
+  // Always show every branch (same as Sales by Branch); highlight via selectedBranch.
+  const weekdayRows = branchWeakDays;
 
   const branchLabel = selectedBranch === 'all'
     ? 'All Branches'
@@ -629,8 +628,17 @@ export const SalesAnalytics: React.FC = () => {
                     const weakName = bw.weakestDayOfWeek?.name;
                     const strongName = bw.strongestDayOfWeek?.name;
                     const colorIdx = branches.findIndex(b => String(b.branch.id) === String(bw.branch.branch.id));
+                    const active = selectedBranch !== 'all' && String(selectedBranch) === String(bw.branch.branch.id);
                     return (
-                    <tr key={bw.branch.branch.id}>
+                    <tr
+                      key={bw.branch.branch.id}
+                      onClick={() => setSelectedBranch(bw.branch.branch.id)}
+                      className={`cursor-pointer transition-colors ${
+                        active
+                          ? 'bg-indigo-100/70 dark:bg-indigo-900/40 ring-1 ring-inset ring-indigo-400/40'
+                          : 'hover:bg-slate-50 dark:hover:bg-slate-800/60'
+                      }`}
+                    >
                       <td className="px-1.5 sm:px-2 py-2 font-bold text-slate-900 dark:text-white truncate">
                         <span className="inline-block w-2 h-2 rounded-full mr-1 align-middle shrink-0" style={{ background: getBranchColor(colorIdx >= 0 ? colorIdx : idx) }} />
                         {shortBranchLabel(bw.branch.branch.name)}
