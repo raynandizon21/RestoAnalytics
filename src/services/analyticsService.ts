@@ -60,27 +60,239 @@ async function apiFetch<T>(path: string, params: Record<string, string> = {}): P
   }
 }
 
-function getCurrentMonthRange() {
+export type DateRange = { start_date: string; end_date: string };
+export type ViewPeriod = 'month' | 'year';
+
+const pad2 = (n: number) => String(n).padStart(2, '0');
+
+export function toDateKey(d: Date): string {
+  return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
+}
+
+export function parseDateKey(key: string): Date {
+  return new Date(`${key.slice(0, 10)}T12:00:00`);
+}
+
+export function todayKey(): string {
+  return toDateKey(new Date());
+}
+
+/** Clamp end_date to today if in the future. */
+export function clampRangeToToday(range: DateRange): DateRange {
+  const today = todayKey();
+  if (range.start_date > today) {
+    return getCurrentMonthRange();
+  }
+  if (range.end_date > today) {
+    return { start_date: range.start_date, end_date: today };
+  }
+  return range;
+}
+
+export function makeRange(start: string, end: string): DateRange {
+  const a = start.slice(0, 10);
+  const b = end.slice(0, 10);
+  return clampRangeToToday(a <= b ? { start_date: a, end_date: b } : { start_date: b, end_date: a });
+}
+
+/** Current calendar month MTD (1st → today). */
+export function getCurrentMonthRange(): DateRange {
   const today = new Date();
-  const pad = (n: number) => String(n).padStart(2, '0');
   return {
-    start_date: `${today.getFullYear()}-${pad(today.getMonth() + 1)}-01`,
-    end_date: `${today.getFullYear()}-${pad(today.getMonth() + 1)}-${pad(today.getDate())}`,
+    start_date: `${today.getFullYear()}-${pad2(today.getMonth() + 1)}-01`,
+    end_date: toDateKey(today),
   };
 }
 
-/** Same calendar days last month (MTD vs MTD). */
-function getPrevMonthSamePeriodRange() {
+/**
+ * Range for a given calendar month (0-based monthIndex).
+ * Current month → MTD; other months → full month.
+ */
+export function getMonthRange(year: number, monthIndex: number): DateRange {
   const today = new Date();
-  const day = today.getDate();
-  const prev = new Date(today.getFullYear(), today.getMonth() - 1, 1);
-  const lastDayPrev = new Date(today.getFullYear(), today.getMonth(), 0).getDate();
-  const endDay = Math.min(day, lastDayPrev);
-  const pad = (n: number) => String(n).padStart(2, '0');
+  const start_date = `${year}-${pad2(monthIndex + 1)}-01`;
+  const isCurrent =
+    year === today.getFullYear() && monthIndex === today.getMonth();
+  if (isCurrent) {
+    return { start_date, end_date: toDateKey(today) };
+  }
+  const lastDay = new Date(year, monthIndex + 1, 0).getDate();
   return {
-    start_date: `${prev.getFullYear()}-${pad(prev.getMonth() + 1)}-01`,
-    end_date: `${prev.getFullYear()}-${pad(prev.getMonth() + 1)}-${pad(endDay)}`,
+    start_date,
+    end_date: `${year}-${pad2(monthIndex + 1)}-${pad2(lastDay)}`,
   };
+}
+
+/**
+ * Full calendar year. Current year → YTD (Jan 1 → today); past years → Jan 1 → Dec 31.
+ */
+export function getYearRange(year: number): DateRange {
+  const today = new Date();
+  const start_date = `${year}-01-01`;
+  if (year === today.getFullYear()) {
+    return { start_date, end_date: toDateKey(today) };
+  }
+  if (year > today.getFullYear()) {
+    return getCurrentMonthRange();
+  }
+  return { start_date, end_date: `${year}-12-31` };
+}
+
+/** Inclusive month span (0-based months). */
+export function getMonthsRange(
+  startYear: number,
+  startMonth: number,
+  endYear: number,
+  endMonth: number,
+): DateRange {
+  let sy = startYear, sm = startMonth, ey = endYear, em = endMonth;
+  if (sy > ey || (sy === ey && sm > em)) {
+    [sy, sm, ey, em] = [ey, em, sy, sm];
+  }
+  const start = getMonthRange(sy, sm);
+  const end = getMonthRange(ey, em);
+  return makeRange(start.start_date, end.end_date);
+}
+
+export function getViewRange(period: ViewPeriod, year: number, monthIndex: number): DateRange {
+  return period === 'year' ? getYearRange(year) : getMonthRange(year, monthIndex);
+}
+
+/** Equal-length period immediately before `from` (for Compare). */
+function getPrevPeriodRange(from: DateRange): DateRange {
+  const start = parseDateKey(from.start_date);
+  const end = parseDateKey(from.end_date);
+  const days = Math.max(1, Math.round((end.getTime() - start.getTime()) / 86_400_000) + 1);
+  const prevEnd = new Date(start);
+  prevEnd.setDate(prevEnd.getDate() - 1);
+  const prevStart = new Date(prevEnd);
+  prevStart.setDate(prevStart.getDate() - (days - 1));
+  return { start_date: toDateKey(prevStart), end_date: toDateKey(prevEnd) };
+}
+
+export function formatMonthLabel(year: number, monthIndex: number) {
+  return new Date(year, monthIndex, 1).toLocaleString('en-US', { month: 'short', year: 'numeric' });
+}
+
+export function formatRangeLabel(range: DateRange, period: ViewPeriod = 'month'): string {
+  const start = parseDateKey(range.start_date);
+  if (period === 'year') return String(start.getFullYear());
+  return formatMonthLabel(start.getFullYear(), start.getMonth());
+}
+
+export function formatPeriodLabel(period: ViewPeriod, year: number, monthIndex: number) {
+  return period === 'year' ? String(year) : formatMonthLabel(year, monthIndex);
+}
+
+/** Inclusive day count for a YYYY-MM-DD range. */
+export function daysInRange(range: DateRange) {
+  const start = parseDateKey(range.start_date);
+  const end = parseDateKey(range.end_date);
+  return Math.max(1, Math.round((end.getTime() - start.getTime()) / 86_400_000) + 1);
+}
+
+/** True when chart should show monthly bars (multi-month / year). */
+export function isMultiMonthRange(range: DateRange) {
+  const start = parseDateKey(range.start_date);
+  const end = parseDateKey(range.end_date);
+  return start.getFullYear() !== end.getFullYear() || start.getMonth() !== end.getMonth();
+}
+
+/** Shift active range by ±1 month or ±1 year. */
+export function shiftViewRange(range: DateRange, period: ViewPeriod, delta: number): DateRange | null {
+  const today = new Date();
+  const start = parseDateKey(range.start_date);
+
+  if (period === 'year') {
+    const y = start.getFullYear() + delta;
+    if (y > today.getFullYear()) return null;
+    return getYearRange(y);
+  }
+
+  const d = new Date(start.getFullYear(), start.getMonth() + delta, 1);
+  const max = new Date(today.getFullYear(), today.getMonth(), 1);
+  if (d > max) return null;
+  return getMonthRange(d.getFullYear(), d.getMonth());
+}
+
+/** Roll daily points into month bars. Pass a year → always Jan–Dec (future months = 0). */
+export function aggregateTrendByMonth(points: DailySalesPoint[], yearOrRange: number | DateRange): DailySalesPoint[] {
+  if (typeof yearOrRange === 'number') {
+    const year = yearOrRange;
+    const months = Array.from({ length: 12 }, (_, m) => ({
+      m,
+      totalSales: 0,
+      netSales: 0,
+      grossProfit: 0,
+    }));
+    for (const p of points) {
+      const d = parseDateKey(p.fullDate);
+      if (Number.isNaN(d.getTime()) || d.getFullYear() !== year) continue;
+      const hit = months[d.getMonth()];
+      hit.totalSales += p.totalSales;
+      hit.netSales += p.netSales;
+      hit.grossProfit += p.grossProfit;
+    }
+    return months.map((m, idx) => {
+      const label = new Date(year, m.m, 1).toLocaleString('en-US', { month: 'short' });
+      return {
+        dateStr: label,
+        fullDate: `${year}-${pad2(m.m + 1)}-01`,
+        dayName: label,
+        dayNumber: idx + 1,
+        isSaturday: false,
+        isSunday: false,
+        totalSales: m.totalSales,
+        refund: 0,
+        discount: 0,
+        netSales: m.netSales,
+        grossProfit: m.grossProfit,
+      };
+    });
+  }
+
+  const range = yearOrRange;
+  const start = parseDateKey(range.start_date);
+  const end = parseDateKey(range.end_date);
+  const months: Array<{ y: number; m: number; totalSales: number; netSales: number; grossProfit: number }> = [];
+  let cursor = new Date(start.getFullYear(), start.getMonth(), 1);
+  const endMonth = new Date(end.getFullYear(), end.getMonth(), 1);
+  while (cursor <= endMonth) {
+    months.push({
+      y: cursor.getFullYear(),
+      m: cursor.getMonth(),
+      totalSales: 0,
+      netSales: 0,
+      grossProfit: 0,
+    });
+    cursor = new Date(cursor.getFullYear(), cursor.getMonth() + 1, 1);
+  }
+  for (const p of points) {
+    const d = parseDateKey(p.fullDate);
+    if (Number.isNaN(d.getTime()) || d < start || d > end) continue;
+    const hit = months.find(x => x.y === d.getFullYear() && x.m === d.getMonth());
+    if (!hit) continue;
+    hit.totalSales += p.totalSales;
+    hit.netSales += p.netSales;
+    hit.grossProfit += p.grossProfit;
+  }
+  return months.map((m, idx) => {
+    const label = new Date(m.y, m.m, 1).toLocaleString('en-US', { month: 'short' });
+    const yearBit = start.getFullYear() !== end.getFullYear() ? ` '${String(m.y).slice(2)}` : '';
+    return {
+      dateStr: `${label}${yearBit}`,
+      fullDate: `${m.y}-${pad2(m.m + 1)}-01`,
+      dayName: label,
+      dayNumber: idx + 1,
+      isSaturday: false,
+      isSunday: false,
+      totalSales: m.totalSales,
+      refund: 0,
+      discount: 0,
+      netSales: m.netSales,
+      grossProfit: m.grossProfit,
+    };
+  });
 }
 
 // ─── Dashboard Bundle (single call for all core data) ───
@@ -106,8 +318,11 @@ export async function fetchDashboard(
 
 // ─── Branch Comparison (for matrix & P&L view) ───
 
-export async function fetchBranchComparison(force = false): Promise<BranchComparisonData[] | null> {
-  const bundle = await fetchDashboard(force);
+export async function fetchBranchComparison(
+  force = false,
+  range?: DateRange,
+): Promise<BranchComparisonData[] | null> {
+  const bundle = await fetchDashboard(force, undefined, range);
   if (!bundle?.branchCardsData?.length) return null;
 
   return bundle.branchCardsData.map((b) => {
@@ -170,52 +385,88 @@ export async function fetchBranchComparison(force = false): Promise<BranchCompar
 
 // ─── Daily Sales Trend ───
 
-export async function fetchDailyTrend(branchId?: string, force = false): Promise<DailySalesPoint[]> {
+export async function fetchDailyTrend(
+  branchId?: string,
+  force = false,
+  range?: DateRange,
+): Promise<DailySalesPoint[]> {
   // Always load trend for the selected scope (all vs one branch)
-  const bundle = await fetchDashboard(force, branchId);
-  if (!bundle?.trendData?.length) return [];
+  const activeRange = range || getCurrentMonthRange();
+  const bundle = await fetchDashboard(force, branchId, activeRange);
 
   const dayNames = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
-  const now = new Date();
-  const year = now.getFullYear(), month = now.getMonth();
+  const rangeStart = parseDateKey(activeRange.start_date);
+  const rangeEnd = parseDateKey(activeRange.end_date);
+  const year = rangeStart.getFullYear();
+  const month = rangeStart.getMonth();
 
-  return bundle.trendData
-    .filter((d) => (Number(d.totalSales) || 0) > 0)
-    .map((d) => {
-      let dateObj: Date;
-      if (d.date && /^\d{4}-\d{2}-\d{2}/.test(String(d.date))) {
-        const raw = String(d.date);
-        dateObj = raw.includes('T')
-          ? new Date(raw)
-          : new Date(raw.slice(0, 10) + 'T12:00:00');
-      } else {
-        const dayNum = parseInt(d.name) || 1;
-        dateObj = new Date(year, month, dayNum);
-      }
-      if (Number.isNaN(dateObj.getTime())) {
-        dateObj = new Date(year, month, parseInt(d.name) || 1);
-      }
-      const dow = dateObj.getDay();
-      const dayNum = dateObj.getDate();
-      const gross = Number(d.totalSales) || 0;
-      const exp = Number(d.totalExpenses) || 0;
-      const net = gross;
-      const profit = Math.max(0, net - exp);
-      return {
-        dateStr: dateObj.toLocaleDateString('en-US', { month: 'short', day: '2-digit' }),
-        fullDate: `${year}-${String(month + 1).padStart(2, '0')}-${String(dayNum).padStart(2, '0')}`,
-        dayName: dayNames[dow], dayNumber: dayNum,
-        isSaturday: dow === 6, isSunday: dow === 0,
-        totalSales: gross, refund: 0, discount: 0, netSales: net, grossProfit: profit,
-      };
-    })
-    .sort((a, b) => a.fullDate.localeCompare(b.fullDate));
+  const byDate = new Map<string, { totalSales: number; totalExpenses: number }>();
+  for (const d of bundle?.trendData || []) {
+    let dateObj: Date;
+    if (d.date && /^\d{4}-\d{2}-\d{2}/.test(String(d.date))) {
+      const raw = String(d.date);
+      dateObj = raw.includes('T')
+        ? new Date(raw)
+        : new Date(raw.slice(0, 10) + 'T12:00:00');
+    } else {
+      const dayNum = parseInt(String(d.name), 10) || 1;
+      dateObj = new Date(year, month, dayNum);
+    }
+    if (Number.isNaN(dateObj.getTime())) continue;
+    const key = toDateKey(dateObj);
+    const prev = byDate.get(key) || { totalSales: 0, totalExpenses: 0 };
+    byDate.set(key, {
+      totalSales: prev.totalSales + (Number(d.totalSales) || 0),
+      totalExpenses: prev.totalExpenses + (Number(d.totalExpenses) || 0),
+    });
+  }
+
+  // Fill every calendar day in the month(s) — zeros where no sales
+  // Single-month view → full month (1 → last day), even if range is MTD
+  const sameMonth =
+    rangeStart.getFullYear() === rangeEnd.getFullYear() &&
+    rangeStart.getMonth() === rangeEnd.getMonth();
+  const fillStart = sameMonth
+    ? new Date(rangeStart.getFullYear(), rangeStart.getMonth(), 1)
+    : new Date(rangeStart.getFullYear(), rangeStart.getMonth(), rangeStart.getDate());
+  const fillEnd = sameMonth
+    ? new Date(rangeStart.getFullYear(), rangeStart.getMonth() + 1, 0)
+    : new Date(rangeEnd.getFullYear(), rangeEnd.getMonth(), rangeEnd.getDate());
+
+  const points: DailySalesPoint[] = [];
+  for (let d = new Date(fillStart); d <= fillEnd; d.setDate(d.getDate() + 1)) {
+    const key = toDateKey(d);
+    const hit = byDate.get(key);
+    const gross = hit?.totalSales || 0;
+    const exp = hit?.totalExpenses || 0;
+    const dow = d.getDay();
+    const dayNum = d.getDate();
+    points.push({
+      dateStr: d.toLocaleDateString('en-US', { month: 'short', day: '2-digit' }),
+      fullDate: key,
+      dayName: dayNames[dow],
+      dayNumber: dayNum,
+      isSaturday: dow === 6,
+      isSunday: dow === 0,
+      totalSales: gross,
+      refund: 0,
+      discount: 0,
+      netSales: gross,
+      grossProfit: Math.max(0, gross - exp),
+    });
+  }
+  return points;
 }
 
 // ─── Top Selling Items ───
 
-export async function fetchTopSelling(limit = 10, branchId?: string, dayName?: string): Promise<TopSellingItem[]> {
-  const { start_date, end_date } = getCurrentMonthRange();
+export async function fetchTopSelling(
+  limit = 10,
+  branchId?: string,
+  dayName?: string,
+  range?: DateRange,
+): Promise<TopSellingItem[]> {
+  const { start_date, end_date } = range || getCurrentMonthRange();
   const params: Record<string, string> = { start_date, end_date, limit: String(limit) };
   if (branchId) params.branch_id = branchId;
   if (dayName) params.day_name = dayName;
@@ -250,8 +501,9 @@ export async function fetchMenuDaily(
   menuId: string,
   menuName: string,
   branchId?: string,
+  range?: DateRange,
 ): Promise<MenuDailyPoint[]> {
-  const { start_date, end_date } = getCurrentMonthRange();
+  const { start_date, end_date } = range || getCurrentMonthRange();
   const params: Record<string, string> = { start_date, end_date };
   // Prefer name match (stable); menu_id when available
   if (menuName) params.menu_name = menuName;
@@ -315,8 +567,8 @@ export interface DailyBranchSales {
   orderCount: number;
 }
 
-export async function fetchDailyPerBranch(): Promise<DailyBranchSales[]> {
-  const { start_date, end_date } = getCurrentMonthRange();
+export async function fetchDailyPerBranch(range?: DateRange): Promise<DailyBranchSales[]> {
+  const { start_date, end_date } = range || getCurrentMonthRange();
   const data = await apiFetch<any>('/analytics/daily-per-branch', { start_date, end_date });
   if (!data?.data?.length) return [];
   return data.data.map((r: any) => ({
@@ -405,48 +657,165 @@ function trendSalesByDay(bundle: DashboardBundle | null): Map<number, number> {
   return map;
 }
 
-/** Current MTD vs same days last month — KPIs + daily sales graph. */
-export async function fetchPeriodCompare(branchId?: string): Promise<PeriodCompare | null> {
-  const curRange = getCurrentMonthRange();
-  const prevRange = getPrevMonthSamePeriodRange();
-  const [mom, curDash, prevDash] = await Promise.all([
-    fetchMomComparison(branchId),
+function totalsFromBundle(bundle: DashboardBundle | null): MomTotals {
+  const sales = Number(bundle?.summary?.totalSales) || 0;
+  const expenses = Number(bundle?.summary?.totalExpenses) || 0;
+  const profit = sales - expenses;
+  const orders = (bundle?.branchCardsData || []).reduce((s, b) => s + (Number(b.totalOrders) || 0), 0);
+  return {
+    sales,
+    expenses,
+    profit,
+    orders,
+    margin: sales > 0 ? (profit / sales) * 100 : 0,
+    expenseRate: sales > 0 ? (expenses / sales) * 100 : 0,
+  };
+}
+
+function deltaFromTotals(current: MomTotals, previous: MomTotals): MomDelta {
+  const pct = (cur: number, prev: number) => (prev !== 0 ? ((cur - prev) / Math.abs(prev)) * 100 : cur !== 0 ? 100 : 0);
+  return {
+    sales: current.sales - previous.sales,
+    salesPct: pct(current.sales, previous.sales),
+    profit: current.profit - previous.profit,
+    profitPct: pct(current.profit, previous.profit),
+    expenses: current.expenses - previous.expenses,
+    expensesPct: pct(current.expenses, previous.expenses),
+    orders: current.orders - previous.orders,
+    ordersPct: pct(current.orders, previous.orders),
+    marginPts: current.margin - previous.margin,
+  };
+}
+
+function monthLabelFromRange(range: DateRange) {
+  const start = new Date(range.start_date + 'T12:00:00');
+  const end = new Date(range.end_date + 'T12:00:00');
+  if (start.getFullYear() === end.getFullYear() && start.getMonth() === end.getMonth()) {
+    return start.toLocaleString('en-US', { month: 'short', year: 'numeric' });
+  }
+  if (start.getMonth() === 0 && start.getDate() === 1) {
+    return String(start.getFullYear());
+  }
+  return `${start.toLocaleString('en-US', { month: 'short', year: 'numeric' })} – ${end.toLocaleString('en-US', { month: 'short', year: 'numeric' })}`;
+}
+
+function trendSalesByMonth(bundle: DashboardBundle | null): Map<number, number> {
+  const map = new Map<number, number>();
+  for (const d of bundle?.trendData || []) {
+    let month = 0;
+    if (d.date && /^\d{4}-\d{2}-\d{2}/.test(String(d.date))) {
+      month = new Date(String(d.date).slice(0, 10) + 'T12:00:00').getMonth() + 1;
+    }
+    if (!month) continue;
+    map.set(month, (map.get(month) || 0) + (Number(d.totalSales) || 0));
+  }
+  return map;
+}
+
+function isYearLikeRange(range: DateRange) {
+  const start = new Date(range.start_date + 'T12:00:00');
+  const end = new Date(range.end_date + 'T12:00:00');
+  return !(start.getFullYear() === end.getFullYear() && start.getMonth() === end.getMonth());
+}
+
+/** Selected period vs prior comparable period — KPIs + trend graph. */
+export async function fetchPeriodCompare(
+  branchId?: string,
+  range?: DateRange,
+): Promise<PeriodCompare | null> {
+  const curRange = range || getCurrentMonthRange();
+  const prevRange = getPrevPeriodRange(curRange);
+  const isCurrentMtd =
+    !range ||
+    (curRange.start_date === getCurrentMonthRange().start_date &&
+      curRange.end_date === getCurrentMonthRange().end_date);
+
+  // MoM API is current-month only; for other periods build from dashboard bundles.
+  if (isCurrentMtd) {
+    const [mom, curDash, prevDash] = await Promise.all([
+      fetchMomComparison(branchId),
+      fetchDashboard(true, branchId, curRange),
+      fetchDashboard(true, branchId, prevRange),
+    ]);
+    if (!mom) return null;
+
+    let current = mom.fleet.current;
+    let previous = mom.fleet.previous;
+    let delta = mom.fleet.delta;
+    if (branchId) {
+      const row = mom.branches.find(b => String(b.branchId) === String(branchId));
+      if (row) {
+        current = row.current;
+        previous = row.previous;
+        delta = row.delta;
+      }
+    }
+
+    const curMap = trendSalesByDay(curDash);
+    const prevMap = trendSalesByDay(prevDash);
+    const endDay = parseInt(curRange.end_date.split('-')[2], 10) || 31;
+    const maxDay = Math.max(endDay, ...curMap.keys(), ...prevMap.keys(), 1);
+    const chart: PeriodComparePoint[] = [];
+    for (let d = 1; d <= maxDay; d++) {
+      chart.push({
+        dayNumber: d,
+        current: curMap.get(d) || 0,
+        previous: prevMap.get(d) || 0,
+      });
+    }
+
+    return {
+      currentLabel: mom.currentLabel,
+      previousLabel: mom.previousLabel,
+      current,
+      previous,
+      delta,
+      chart,
+    };
+  }
+
+  const [curDash, prevDash] = await Promise.all([
     fetchDashboard(true, branchId, curRange),
     fetchDashboard(true, branchId, prevRange),
   ]);
-  if (!mom) return null;
+  if (!curDash && !prevDash) return null;
 
-  let current = mom.fleet.current;
-  let previous = mom.fleet.previous;
-  let delta = mom.fleet.delta;
-  if (branchId) {
-    const row = mom.branches.find(b => String(b.branchId) === String(branchId));
-    if (row) {
-      current = row.current;
-      previous = row.previous;
-      delta = row.delta;
+  const current = totalsFromBundle(curDash);
+  const previous = totalsFromBundle(prevDash);
+  const chart: PeriodComparePoint[] = [];
+
+  if (isYearLikeRange(curRange)) {
+    const curMap = trendSalesByMonth(curDash);
+    const prevMap = trendSalesByMonth(prevDash);
+    const endMonth = parseInt(curRange.end_date.split('-')[1], 10) || 12;
+    const maxMonth = Math.max(endMonth, ...curMap.keys(), ...prevMap.keys(), 1);
+    for (let m = 1; m <= maxMonth; m++) {
+      chart.push({
+        dayNumber: m,
+        current: curMap.get(m) || 0,
+        previous: prevMap.get(m) || 0,
+      });
+    }
+  } else {
+    const curMap = trendSalesByDay(curDash);
+    const prevMap = trendSalesByDay(prevDash);
+    const endDay = parseInt(curRange.end_date.split('-')[2], 10) || 31;
+    const maxDay = Math.max(endDay, ...curMap.keys(), ...prevMap.keys(), 1);
+    for (let d = 1; d <= maxDay; d++) {
+      chart.push({
+        dayNumber: d,
+        current: curMap.get(d) || 0,
+        previous: prevMap.get(d) || 0,
+      });
     }
   }
 
-  const curMap = trendSalesByDay(curDash);
-  const prevMap = trendSalesByDay(prevDash);
-  const endDay = parseInt(curRange.end_date.split('-')[2], 10) || 31;
-  const maxDay = Math.max(endDay, ...curMap.keys(), ...prevMap.keys(), 1);
-  const chart: PeriodComparePoint[] = [];
-  for (let d = 1; d <= maxDay; d++) {
-    chart.push({
-      dayNumber: d,
-      current: curMap.get(d) || 0,
-      previous: prevMap.get(d) || 0,
-    });
-  }
-
   return {
-    currentLabel: mom.currentLabel,
-    previousLabel: mom.previousLabel,
+    currentLabel: monthLabelFromRange(curRange),
+    previousLabel: monthLabelFromRange(prevRange),
     current,
     previous,
-    delta,
+    delta: deltaFromTotals(current, previous),
     chart,
   };
 }

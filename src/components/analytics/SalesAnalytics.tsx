@@ -1,17 +1,22 @@
 import React, { useState, useEffect, useRef } from 'react';
 import {
-  Building2, ChevronDown, Loader2, AlertCircle, ShoppingBag, X, GitCompareArrows
+  Building2, ChevronDown, ChevronLeft, ChevronRight, Loader2, AlertCircle, ShoppingBag, X, GitCompareArrows
 } from 'lucide-react';
 import {
-  ResponsiveContainer, BarChart, Bar,
+  ResponsiveContainer, BarChart, Bar, LabelList,
   XAxis, YAxis, Tooltip, CartesianGrid, Cell
 } from 'recharts';
 import {
   fetchDailyTrend, fetchBranchComparison, fetchTopSelling,
   fetchDailyPerBranch, fetchMenuDaily, fetchPeriodCompare, formatFullPeso, formatPeso, formatCompact, getBranchColor, sortBranchesByPreferredOrder,
-  type DailySalesPoint, type TopSellingItem, type DailyBranchSales, type MenuDailyPoint, type PeriodCompare,
+  getCurrentMonthRange, getMonthRange, getYearRange, shiftViewRange,
+  formatRangeLabel, daysInRange, aggregateTrendByMonth, parseDateKey, todayKey,
+  type DailySalesPoint, type TopSellingItem, type DailyBranchSales, type MenuDailyPoint, type PeriodCompare, type ViewPeriod, type DateRange,
 } from '../../services/analyticsService';
 import { BranchComparisonData } from '../../types';
+
+const nowInit = new Date();
+const MONTH_SHORT = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'] as const;
 
 const DAY_ORDER = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'] as const;
 const DAY_SHORT = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'] as const;
@@ -64,6 +69,8 @@ function dayNameFromDate(dateStr: string, fallback?: string): string {
 export const SalesAnalytics: React.FC = () => {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [viewPeriod, setViewPeriod] = useState<ViewPeriod>('month');
+  const [activeRange, setActiveRange] = useState<DateRange>(() => getCurrentMonthRange());
   const [branches, setBranches] = useState<BranchComparisonData[]>([]);
   const [daily, setDaily] = useState<DailySalesPoint[]>([]);
   const [topItems, setTopItems] = useState<TopSellingItem[]>([]);
@@ -90,9 +97,70 @@ export const SalesAnalytics: React.FC = () => {
   const [compareLoading, setCompareLoading] = useState(false);
   const [compareData, setCompareData] = useState<PeriodCompare | null>(null);
   const [branchMenuOpen, setBranchMenuOpen] = useState(false);
+  const [monthPickerOpen, setMonthPickerOpen] = useState(false);
+  const [pickerMode, setPickerMode] = useState<'month' | 'year'>('month');
+  const [pickerYear, setPickerYear] = useState(nowInit.getFullYear());
   const branchMenuRef = useRef<HTMLDivElement>(null);
+  const monthPickerRef = useRef<HTMLDivElement>(null);
   const menuSwipeX = useRef<number | null>(null);
   const [isDesktop, setIsDesktop] = useState(false);
+
+  const dateRange = activeRange;
+  const periodLabel = formatRangeLabel(activeRange, viewPeriod);
+  const today = new Date();
+  const maxYear = today.getFullYear();
+  const isYearView = viewPeriod === 'year';
+  const currentMonthRange = getCurrentMonthRange();
+  const isCurrentPeriod =
+    viewPeriod === 'month' &&
+    activeRange.start_date === currentMonthRange.start_date &&
+    activeRange.end_date === currentMonthRange.end_date;
+  const canGoNext = !!shiftViewRange(activeRange, viewPeriod, 1);
+  const decadeStart = Math.floor(pickerYear / 10) * 10;
+  const yearOptions = Array.from({ length: 12 }, (_, i) => decadeStart + i);
+
+  const applyRange = (period: ViewPeriod, range: DateRange) => {
+    setViewPeriod(period);
+    setActiveRange(range);
+    setMonthPickerOpen(false);
+    setPickerMode(period);
+  };
+
+  const goPrev = () => {
+    const next = shiftViewRange(activeRange, viewPeriod, -1);
+    if (next) setActiveRange(next);
+  };
+  const goNext = () => {
+    const next = shiftViewRange(activeRange, viewPeriod, 1);
+    if (next) setActiveRange(next);
+  };
+
+  const openMonthPicker = () => {
+    if (monthPickerOpen) {
+      setMonthPickerOpen(false);
+      return;
+    }
+    const s = parseDateKey(activeRange.start_date);
+    setPickerYear(s.getFullYear());
+    setPickerMode(viewPeriod);
+    setMonthPickerOpen(true);
+  };
+
+  const pickMonth = (year: number, monthIndex: number) => {
+    const max = new Date(today.getFullYear(), today.getMonth(), 1);
+    if (new Date(year, monthIndex, 1) > max) return;
+    applyRange('month', getMonthRange(year, monthIndex));
+  };
+
+  const pickFullYear = (year: number) => {
+    if (year > maxYear) return;
+    applyRange('year', getYearRange(year));
+  };
+
+  const isMonthDisabled = (year: number, monthIndex: number) => {
+    const max = new Date(today.getFullYear(), today.getMonth(), 1);
+    return new Date(year, monthIndex, 1) > max;
+  };
 
   useEffect(() => {
     const mq = window.matchMedia('(min-width: 768px)');
@@ -116,30 +184,62 @@ export const SalesAnalytics: React.FC = () => {
   }, [branchMenuOpen]);
 
   useEffect(() => {
+    if (!monthPickerOpen) return;
+    const onDoc = (e: MouseEvent | TouchEvent) => {
+      if (!monthPickerRef.current?.contains(e.target as Node)) setMonthPickerOpen(false);
+    };
+    document.addEventListener('mousedown', onDoc);
+    document.addEventListener('touchstart', onDoc);
+    return () => {
+      document.removeEventListener('mousedown', onDoc);
+      document.removeEventListener('touchstart', onDoc);
+    };
+  }, [monthPickerOpen]);
+
+  useEffect(() => {
+    let cancelled = false;
     (async () => {
       setLoading(true);
+      setError(null);
       try {
+        const range = activeRange;
+        const branchId = selectedBranch === 'all' ? undefined : selectedBranch;
         const [bData, dData, tData, dpb] = await Promise.all([
-          fetchBranchComparison(true), fetchDailyTrend(undefined, true), fetchTopSelling(5), fetchDailyPerBranch(),
+          fetchBranchComparison(true, range),
+          fetchDailyTrend(branchId, true, range),
+          fetchTopSelling(5, branchId, undefined, range),
+          fetchDailyPerBranch(range),
         ]);
+        if (cancelled) return;
         if (!bData?.length) { setError('Cannot connect to database.'); return; }
         setBranches(sortBranchesByPreferredOrder(bData));
         setDaily(dData);
         setTopItems(tData);
         setDailyPerBranch(dpb);
-      } catch { setError('Failed to load data.'); }
-      finally { setLoading(false); }
+      } catch { if (!cancelled) setError('Failed to load data.'); }
+      finally { if (!cancelled) setLoading(false); }
     })();
-  }, []);
+    return () => { cancelled = true; };
+  }, [activeRange.start_date, activeRange.end_date, viewPeriod]);
 
   useEffect(() => {
-    if (!branches.length) return;
+    if (!branches.length || loading) return;
+    let cancelled = false;
     (async () => {
       const branchId = selectedBranch === 'all' ? undefined : selectedBranch;
-      setDaily(await fetchDailyTrend(branchId, true));
-      setTopItems(await fetchTopSelling(5, branchId));
+      const range = activeRange;
+      const [dData, tData] = await Promise.all([
+        fetchDailyTrend(branchId, true, range),
+        fetchTopSelling(5, branchId, undefined, range),
+      ]);
+      if (cancelled) return;
+      setDaily(dData);
+      setTopItems(tData);
     })();
-  }, [selectedBranch, branches.length]);
+    return () => { cancelled = true; };
+    // Reload daily/top when branch changes only (period load handled above)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedBranch]);
 
   const openDayPopup = async (branchId: string, branchName: string, dayName: string, avgSales: number) => {
     if (avgSales <= 0) return;
@@ -182,7 +282,7 @@ export const SalesAnalytics: React.FC = () => {
     setDayLoading(true);
     setDayTopItems([]);
     try {
-      setDayTopItems(await fetchTopSelling(5, branchId, dayName));
+      setDayTopItems(await fetchTopSelling(5, branchId, dayName, dateRange));
     } finally {
       setDayLoading(false);
     }
@@ -194,7 +294,7 @@ export const SalesAnalytics: React.FC = () => {
     setMenuDaily([]);
     try {
       const branchId = selectedBranch === 'all' ? (item.branchId || undefined) : selectedBranch;
-      setMenuDaily(await fetchMenuDaily(item.menuId, item.name, branchId));
+      setMenuDaily(await fetchMenuDaily(item.menuId, item.name, branchId, dateRange));
     } finally {
       setMenuLoading(false);
     }
@@ -216,7 +316,7 @@ export const SalesAnalytics: React.FC = () => {
     setCompareData(null);
     try {
       const branchId = selectedBranch === 'all' ? undefined : selectedBranch;
-      setCompareData(await fetchPeriodCompare(branchId));
+      setCompareData(await fetchPeriodCompare(branchId, dateRange));
     } finally {
       setCompareLoading(false);
     }
@@ -229,8 +329,10 @@ export const SalesAnalytics: React.FC = () => {
   const totalExpenses = branches.reduce((s, b) => s + b.totals.expenses, 0);
   const totalProfit = branches.reduce((s, b) => s + b.totals.netProfit, 0);
   const totalOrders = branches.reduce((s, b) => s + (b.totals.orders || 0), 0);
-  // Calendar MTD days (not only days with sales) for accurate /day
-  const daysCount = Math.max(1, new Date().getDate());
+  // Calendar days in selected range for accurate /day
+  const daysCount = daysInRange(dateRange);
+  const viewYearNum = parseDateKey(activeRange.start_date).getFullYear();
+  const chartData = isYearView ? aggregateTrendByMonth(daily, viewYearNum) : daily;
   const profitMargin = totalSales > 0 ? (totalProfit / totalSales) * 100 : 0;
   const expenseRate = totalSales > 0 ? (totalExpenses / totalSales) * 100 : 0;
 
@@ -355,9 +457,165 @@ export const SalesAnalytics: React.FC = () => {
               </div>
             )}
           </div>
-          <span className="text-xs sm:text-sm text-slate-500 shrink-0 tabular-nums">
-            {new Date().toLocaleString('en-US', { month: 'short', year: 'numeric' })}
-          </span>
+          <div className="relative flex items-center gap-0.5 shrink-0" ref={monthPickerRef}>
+            <button
+              type="button"
+              onClick={goPrev}
+              className="p-1.5 rounded-lg text-slate-500 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800 hover:text-slate-800 dark:hover:text-white transition"
+              title={isYearView ? 'Previous year' : 'Previous month'}
+              aria-label={isYearView ? 'Previous year' : 'Previous month'}
+            >
+              <ChevronLeft className="w-4 h-4" />
+            </button>
+            <button
+              type="button"
+              onClick={openMonthPicker}
+              className={`inline-flex items-center gap-1 px-2 py-1 rounded-lg text-xs sm:text-sm tabular-nums font-semibold transition border ${
+                monthPickerOpen
+                  ? 'bg-indigo-50 dark:bg-indigo-950/40 text-indigo-600 dark:text-indigo-300 border-indigo-200 dark:border-indigo-800'
+                  : 'text-slate-700 dark:text-slate-200 border-transparent hover:bg-slate-100 dark:hover:bg-slate-800'
+              }`}
+              title="Pick month or year"
+              aria-expanded={monthPickerOpen}
+            >
+              {periodLabel}
+              {isYearView && (
+                <span className="text-[9px] font-bold uppercase tracking-wide text-indigo-500 dark:text-indigo-400">Year</span>
+              )}
+              <ChevronDown className={`w-3.5 h-3.5 text-slate-400 transition-transform ${monthPickerOpen ? 'rotate-180' : ''}`} />
+            </button>
+            <button
+              type="button"
+              onClick={goNext}
+              disabled={!canGoNext}
+              className="p-1.5 rounded-lg text-slate-500 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800 hover:text-slate-800 dark:hover:text-white transition disabled:opacity-30 disabled:pointer-events-none"
+              title={isYearView ? 'Next year' : 'Next month'}
+              aria-label={isYearView ? 'Next year' : 'Next month'}
+            >
+              <ChevronRight className="w-4 h-4" />
+            </button>
+
+            {monthPickerOpen && (
+              <div className="absolute right-0 top-full mt-1.5 z-50 w-[248px] rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 shadow-xl p-3">
+                <div className="grid grid-cols-2 gap-1 p-0.5 mb-2.5 rounded-lg bg-slate-100 dark:bg-slate-800">
+                  <button
+                    type="button"
+                    onClick={() => setPickerMode('month')}
+                    className={`py-1.5 rounded-md text-[11px] font-bold transition ${
+                      pickerMode === 'month'
+                        ? 'bg-white dark:bg-slate-700 text-slate-900 dark:text-white shadow-sm'
+                        : 'text-slate-500 hover:text-slate-700 dark:hover:text-slate-300'
+                    }`}
+                  >
+                    Month
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setPickerMode('year')}
+                    className={`py-1.5 rounded-md text-[11px] font-bold transition ${
+                      pickerMode === 'year'
+                        ? 'bg-white dark:bg-slate-700 text-slate-900 dark:text-white shadow-sm'
+                        : 'text-slate-500 hover:text-slate-700 dark:hover:text-slate-300'
+                    }`}
+                  >
+                    Year
+                  </button>
+                </div>
+
+                {pickerMode === 'month' ? (
+                  <>
+                    <div className="flex items-center justify-between mb-2.5">
+                      <button type="button" onClick={() => setPickerYear(y => y - 1)} className="p-1 rounded-md text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-800" aria-label="Previous year">
+                        <ChevronLeft className="w-4 h-4" />
+                      </button>
+                      <span className="text-sm font-bold text-slate-900 dark:text-white tabular-nums">{pickerYear}</span>
+                      <button type="button" onClick={() => setPickerYear(y => Math.min(maxYear, y + 1))} disabled={pickerYear >= maxYear} className="p-1 rounded-md text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-800 disabled:opacity-30 disabled:pointer-events-none" aria-label="Next year">
+                        <ChevronRight className="w-4 h-4" />
+                      </button>
+                    </div>
+                    <div className="grid grid-cols-3 gap-1">
+                      {MONTH_SHORT.map((m, i) => {
+                        const active = parseDateKey(activeRange.start_date);
+                        const selected =
+                          viewPeriod === 'month' &&
+                          active.getFullYear() === pickerYear &&
+                          active.getMonth() === i;
+                        const disabled = isMonthDisabled(pickerYear, i);
+                        const isNow = pickerYear === today.getFullYear() && i === today.getMonth();
+                        return (
+                          <button
+                            key={m}
+                            type="button"
+                            disabled={disabled}
+                            onClick={() => pickMonth(pickerYear, i)}
+                            className={`py-2 rounded-lg text-xs font-semibold transition ${
+                              disabled
+                                ? 'text-slate-300 dark:text-slate-600 cursor-not-allowed'
+                                : selected
+                                  ? 'bg-indigo-600 text-white'
+                                  : isNow
+                                    ? 'text-indigo-600 dark:text-indigo-400 bg-indigo-50 dark:bg-indigo-950/40 hover:bg-indigo-100 dark:hover:bg-indigo-950/70'
+                                    : 'text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800'
+                            }`}
+                          >
+                            {m}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </>
+                ) : (
+                  <>
+                    <div className="flex items-center justify-between mb-2.5">
+                      <button type="button" onClick={() => setPickerYear(decadeStart - 10)} className="p-1 rounded-md text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-800" aria-label="Previous years">
+                        <ChevronLeft className="w-4 h-4" />
+                      </button>
+                      <span className="text-sm font-bold text-slate-900 dark:text-white tabular-nums">{decadeStart}–{decadeStart + 11}</span>
+                      <button type="button" onClick={() => setPickerYear(Math.min(maxYear, decadeStart + 10))} disabled={decadeStart + 10 > maxYear} className="p-1 rounded-md text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-800 disabled:opacity-30 disabled:pointer-events-none" aria-label="Next years">
+                        <ChevronRight className="w-4 h-4" />
+                      </button>
+                    </div>
+                    <div className="grid grid-cols-3 gap-1">
+                      {yearOptions.map(y => {
+                        const selected = isYearView && parseDateKey(activeRange.start_date).getFullYear() === y;
+                        const disabled = y > maxYear;
+                        const isNow = y === today.getFullYear();
+                        return (
+                          <button
+                            key={y}
+                            type="button"
+                            disabled={disabled}
+                            onClick={() => pickFullYear(y)}
+                            className={`py-2 rounded-lg text-xs font-semibold tabular-nums transition ${
+                              selected
+                                ? 'bg-indigo-600 text-white'
+                                : disabled
+                                  ? 'text-slate-300 dark:text-slate-600 cursor-not-allowed'
+                                  : isNow
+                                    ? 'text-indigo-600 dark:text-indigo-400 bg-indigo-50 dark:bg-indigo-950/40 hover:bg-indigo-100 dark:hover:bg-indigo-950/70'
+                                    : 'text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800'
+                            }`}
+                          >
+                            {y}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </>
+                )}
+
+                {!isCurrentPeriod && (
+                  <button
+                    type="button"
+                    onClick={() => applyRange('month', getCurrentMonthRange())}
+                    className="mt-2.5 w-full py-1.5 rounded-lg text-[11px] font-semibold text-indigo-600 dark:text-indigo-400 hover:bg-indigo-50 dark:hover:bg-indigo-950/40 transition"
+                  >
+                    Current month
+                  </button>
+                )}
+              </div>
+            )}
+          </div>
         </div>
       </div>
 
@@ -397,17 +655,27 @@ export const SalesAnalytics: React.FC = () => {
           <div className="flex items-center justify-between gap-2 shrink-0 mb-1.5">
             <div className="min-w-0">
               <div className="flex items-center gap-2">
-                <h2 className="text-sm sm:text-base font-bold text-slate-900 dark:text-white">Daily Trend</h2>
+                <h2 className="text-sm sm:text-base font-bold text-slate-900 dark:text-white">
+                  {isYearView ? 'Monthly Trend' : 'Daily Trend'}
+                </h2>
                 <span className="text-[10px] font-semibold text-slate-500 uppercase tracking-wider">
-                  {new Date().toLocaleString('en-US', { month: 'short', year: 'numeric' })}
+                  {periodLabel}
                 </span>
               </div>
               {(() => {
-                const n = daily.length || 1;
-                const avgSales = daily.reduce((s, d) => s + d.totalSales, 0) / n;
+                const today = todayKey();
+                const forAvg = isYearView
+                  ? chartData.filter(d => d.totalSales > 0)
+                  : chartData.filter(d => d.fullDate <= today);
+                const n = forAvg.length || 1;
+                const avgSales = forAvg.reduce((s, d) => s + d.totalSales, 0) / n;
                 return (
                   <div className="mt-1 text-[11px] tabular-nums text-slate-500">
-                    Avg <span className="font-bold text-indigo-400">{formatPeso(Math.round(avgSales))}</span>/day
+                    Avg <span className="font-bold text-indigo-400">{formatPeso(Math.round(avgSales))}</span>
+                    /{isYearView ? 'mo' : 'day'}
+                    {isYearView && (
+                      <span className="text-slate-400"> · {forAvg.length} months with sales</span>
+                    )}
                   </div>
                 );
               })()}
@@ -424,15 +692,19 @@ export const SalesAnalytics: React.FC = () => {
           <div className="flex-1 min-h-0 w-full max-w-full overflow-visible">
           <ResponsiveContainer width="100%" height="100%">
               <BarChart
-                data={daily}
-                margin={{ top: 4, right: 2, left: 0, bottom: 4 }}
-                barCategoryGap="8%"
+                data={chartData}
+                margin={{ top: isYearView ? 18 : 4, right: 2, left: 0, bottom: 4 }}
+                barCategoryGap={isYearView ? '12%' : '8%'}
               >
                 <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#334155" opacity={0.1} />
                 <XAxis
-                  dataKey="dayNumber"
+                  dataKey={isYearView ? 'dateStr' : 'dayNumber'}
                   interval={0}
-                  tick={<DayAxisTick points={daily} dayKey="dayNumber" fontSize={isDesktop ? 10 : 7} />}
+                  tick={
+                    isYearView
+                      ? { fontSize: isDesktop ? 10 : 8, fill: '#94a3b8', fontWeight: 700 }
+                      : <DayAxisTick points={chartData} dayKey="dayNumber" fontSize={isDesktop ? 10 : 7} />
+                  }
                   height={isDesktop ? 22 : 18}
                   tickLine={false}
                   axisLine={{ stroke: '#334155', strokeOpacity: 0.35 }}
@@ -448,7 +720,9 @@ export const SalesAnalytics: React.FC = () => {
                   formatter={(v: any) => [formatFullPeso(Number(v)), 'Sales']}
                   labelFormatter={(_, payload: any) => {
                     const p = payload?.[0]?.payload;
-                    return p ? `${p.dateStr} (${p.dayName})` : '';
+                    if (!p) return '';
+                    if (isYearView) return `${p.dateStr} ${viewYearNum}`;
+                    return `${p.dateStr} (${p.dayName})`;
                   }}
                   contentStyle={{ backgroundColor: '#0f172a', borderRadius: '12px', border: '1px solid #334155', fontSize: '12px', boxShadow: '0 12px 40px rgba(0,0,0,.45)' }}
                   labelStyle={{ color: '#f8fafc', fontWeight: 700 }}
@@ -459,7 +733,24 @@ export const SalesAnalytics: React.FC = () => {
                   radius={[2, 2, 0, 0]}
                   fill="#818cf8"
                   isAnimationActive={false}
-                />
+                  cursor={isYearView ? 'pointer' : undefined}
+                  onClick={isYearView ? (data: any) => {
+                    const fullDate = data?.fullDate || data?.payload?.fullDate;
+                    if (!fullDate) return;
+                    const d = parseDateKey(fullDate);
+                    if (isMonthDisabled(d.getFullYear(), d.getMonth())) return;
+                    pickMonth(d.getFullYear(), d.getMonth());
+                  } : undefined}
+                >
+                  {isYearView && (
+                    <LabelList
+                      dataKey="totalSales"
+                      position="top"
+                      formatter={(v: number) => (Number(v) > 0 ? formatCompact(Number(v)) : '')}
+                      style={{ fontSize: isDesktop ? 9 : 7, fill: '#94a3b8', fontWeight: 700 }}
+                    />
+                  )}
+                </Bar>
               </BarChart>
           </ResponsiveContainer>
         </div>
@@ -759,7 +1050,6 @@ export const SalesAnalytics: React.FC = () => {
           : null;
         const totalQty = menuDaily.reduce((s, d) => s + d.qty, 0);
         const totalRev = menuDaily.reduce((s, d) => s + d.revenue, 0);
-        const monthLabel = new Date().toLocaleString('en-US', { month: 'short', year: 'numeric' });
         const menuIdx = topItems.findIndex(
           t => String(t.menuId) === String(menuPopup.menuId) && String(t.branchId) === String(menuPopup.branchId)
         );
@@ -830,7 +1120,7 @@ export const SalesAnalytics: React.FC = () => {
               </div>
 
               <div className="px-4 flex items-center justify-between shrink-0 mb-1">
-                <span className="text-xs font-bold text-slate-400 uppercase tracking-wider">{monthLabel}</span>
+                <span className="text-xs font-bold text-slate-400 uppercase tracking-wider">{periodLabel}</span>
                 <span className="text-[10px] text-slate-500">Green = peak</span>
               </div>
 
@@ -951,8 +1241,9 @@ export const SalesAnalytics: React.FC = () => {
                       <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#334155" opacity={0.12} />
                       <XAxis
                         dataKey="dayNumber"
-                        interval={isDesktop ? 1 : 2}
+                        interval={isYearView ? 0 : (isDesktop ? 1 : 2)}
                         tick={{ fontSize: 8, fill: '#94a3b8' }}
+                        tickFormatter={isYearView ? (m: number) => chartData[m - 1]?.dateStr || String(m) : undefined}
                         tickLine={false}
                         axisLine={{ stroke: '#334155', strokeOpacity: 0.35 }}
                         height={16}
@@ -966,7 +1257,7 @@ export const SalesAnalytics: React.FC = () => {
                       />
                       <Tooltip
                         formatter={(v: any, name: any) => [formatFullPeso(Number(v)), name === 'previous' ? 'Previous' : 'Current']}
-                        labelFormatter={d => `Day ${d}`}
+                        labelFormatter={d => isYearView ? (chartData[Number(d) - 1]?.dateStr || `M${d}`) : `Day ${d}`}
                         contentStyle={{ backgroundColor: '#0f172a', borderRadius: '12px', border: '1px solid #334155', fontSize: '12px' }}
                         labelStyle={{ color: '#f8fafc', fontWeight: 700 }}
                         itemStyle={{ color: '#e2e8f0', fontWeight: 600 }}
