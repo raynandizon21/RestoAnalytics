@@ -500,7 +500,7 @@ export const BranchComparisonModal: React.FC<Props> = ({ open, onClose, initialR
                 <div
                   ref={fitContentRef}
                   className="origin-top-left w-full"
-                  style={{ transform: `scale(${fitScale})` }}
+                  style={fitScale < 0.999 ? { transform: `scale(${fitScale})` } : undefined}
                 >
                 <table className="w-full text-left border-collapse table-fixed">
                   <colgroup>
@@ -511,13 +511,13 @@ export const BranchComparisonModal: React.FC<Props> = ({ open, onClose, initialR
                   </colgroup>
                   <thead className="bg-white dark:bg-slate-900">
                     <tr className="border-b border-slate-200 dark:border-slate-800">
-                      <th className="sticky left-0 z-30 bg-white dark:bg-slate-900 border-r border-slate-200 dark:border-slate-800 px-1 md:px-3 py-2 md:py-3 text-[8px] md:text-xs font-bold uppercase tracking-wide text-indigo-600 dark:text-indigo-300">
+                      <th className="sticky top-0 left-0 z-40 bg-white dark:bg-slate-900 border-r border-slate-200 dark:border-slate-800 px-1 md:px-3 py-2 md:py-3 text-[8px] md:text-xs font-bold uppercase tracking-wide text-indigo-600 dark:text-indigo-300 shadow-[0_1px_0_0_rgba(148,163,184,0.25)]">
                         Comparison Metric
                       </th>
                       {data.map((item) => (
                         <th
                           key={item.branch.id}
-                          className="px-0.5 md:px-3 py-1.5 md:py-3 text-center md:text-left border-l border-slate-200/80 dark:border-slate-800/80"
+                          className="sticky top-0 z-30 bg-white dark:bg-slate-900 px-0.5 md:px-3 py-1.5 md:py-3 text-center md:text-left border-l border-slate-200/80 dark:border-slate-800/80 shadow-[0_1px_0_0_rgba(148,163,184,0.25)]"
                         >
                           {/* Mobile: logo above name · Desktop: logo left + name right */}
                           <div className="flex flex-col md:flex-row items-center md:items-center justify-center md:justify-start gap-0.5 md:gap-2.5 min-w-0">
