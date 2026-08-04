@@ -1,6 +1,6 @@
-import React, { useState, useEffect, useRef } from 'react';
+﻿import React, { useState, useEffect, useRef } from 'react';
 import {
-  Building2, ChevronDown, ChevronLeft, ChevronRight, Loader2, AlertCircle, ShoppingBag, X, GitCompareArrows
+  Building2, ChevronDown, ChevronLeft, ChevronRight, Loader2, AlertCircle, ShoppingBag, X, Columns2
 } from 'lucide-react';
 import {
   ResponsiveContainer, BarChart, Bar, LabelList,
@@ -14,6 +14,8 @@ import {
   type DailySalesPoint, type TopSellingItem, type DailyBranchSales, type MenuDailyPoint, type PeriodCompare, type ViewPeriod, type DateRange,
 } from '../../services/analyticsService';
 import { BranchComparisonData } from '../../types';
+import { ModalPortal } from '../layout/ModalPortal';
+import { BranchComparisonModal } from './BranchComparisonModal';
 
 const nowInit = new Date();
 const MONTH_SHORT = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'] as const;
@@ -27,12 +29,19 @@ function DayAxisTick({
   x, y, payload, points, dayKey = 'dayNumber', fontSize = 7,
 }: {
   x?: number; y?: number; payload?: { value: number | string };
-  points: Array<{ isSaturday?: boolean; isSunday?: boolean } & Record<string, unknown>>;
-  dayKey?: string;
+  points: Array<{
+    isSaturday?: boolean;
+    isSunday?: boolean;
+    dayNumber?: number;
+    dayNum?: number;
+  }>;
+  dayKey?: 'dayNumber' | 'dayNum';
   fontSize?: number;
 }) {
   const day = Number(payload?.value);
-  const point = points.find(d => Number(d[dayKey]) === day);
+  const point = points.find((d) =>
+    Number(dayKey === 'dayNum' ? d.dayNum : d.dayNumber) === day,
+  );
   const fill = point?.isSaturday ? '#f87171' : point?.isSunday ? '#34d399' : '#94a3b8';
   return (
       <text
@@ -93,9 +102,11 @@ export const SalesAnalytics: React.FC = () => {
   const [menuPopup, setMenuPopup] = useState<TopSellingItem | null>(null);
   const [menuDaily, setMenuDaily] = useState<MenuDailyPoint[]>([]);
   const [menuLoading, setMenuLoading] = useState(false);
+  const menuCardRef = useRef<HTMLDivElement>(null);
   const [compareOpen, setCompareOpen] = useState(false);
   const [compareLoading, setCompareLoading] = useState(false);
   const [compareData, setCompareData] = useState<PeriodCompare | null>(null);
+  const [branchCompareOpen, setBranchCompareOpen] = useState(false);
   const [branchMenuOpen, setBranchMenuOpen] = useState(false);
   const [monthPickerOpen, setMonthPickerOpen] = useState(false);
   const [pickerMode, setPickerMode] = useState<'month' | 'year'>('month');
@@ -104,6 +115,9 @@ export const SalesAnalytics: React.FC = () => {
   const monthPickerRef = useRef<HTMLDivElement>(null);
   const menuSwipeX = useRef<number | null>(null);
   const [isDesktop, setIsDesktop] = useState(false);
+  const [isDark, setIsDark] = useState(
+    () => typeof document !== 'undefined' && document.documentElement.classList.contains('dark'),
+  );
 
   const dateRange = activeRange;
   const periodLabel = formatRangeLabel(activeRange, viewPeriod);
@@ -163,11 +177,27 @@ export const SalesAnalytics: React.FC = () => {
   };
 
   useEffect(() => {
+    if (!branchCompareOpen) return;
+    const prev = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    return () => { document.body.style.overflow = prev; };
+  }, [branchCompareOpen]);
+
+  useEffect(() => {
     const mq = window.matchMedia('(min-width: 768px)');
     const sync = () => setIsDesktop(mq.matches);
     sync();
     mq.addEventListener('change', sync);
     return () => mq.removeEventListener('change', sync);
+  }, []);
+
+  useEffect(() => {
+    const el = document.documentElement;
+    const sync = () => setIsDark(el.classList.contains('dark'));
+    sync();
+    const obs = new MutationObserver(sync);
+    obs.observe(el, { attributes: true, attributeFilter: ['class'] });
+    return () => obs.disconnect();
   }, []);
 
   useEffect(() => {
@@ -310,6 +340,15 @@ export const SalesAnalytics: React.FC = () => {
     await openMenuPopup(next);
   };
 
+  useEffect(() => {
+    if (!menuPopup) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setMenuPopup(null);
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [menuPopup]);
+
   const openCompare = async () => {
     setCompareOpen(true);
     setCompareLoading(true);
@@ -431,7 +470,7 @@ export const SalesAnalytics: React.FC = () => {
               <ChevronDown className={`w-3.5 h-3.5 text-white/80 shrink-0 transition-transform ${branchMenuOpen ? 'rotate-180' : ''}`} />
             </button>
             {branchMenuOpen && isDesktop && (
-              <div className="absolute right-0 top-full mt-1.5 z-50 w-52 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 shadow-xl overflow-hidden max-h-64 overflow-y-auto">
+              <div className="absolute right-0 top-full mt-1.5 z-50 w-52 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 shadow-xl overflow-hidden">
                 <button
                   type="button"
                   onClick={() => { setSelectedBranch('all'); setBranchMenuOpen(false); }}
@@ -456,6 +495,15 @@ export const SalesAnalytics: React.FC = () => {
               </div>
             )}
           </div>
+          <button
+            type="button"
+            onClick={() => setBranchCompareOpen(true)}
+            className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-white dark:bg-slate-900 border border-indigo-200 dark:border-indigo-800 text-indigo-700 dark:text-indigo-300 text-xs font-semibold hover:bg-indigo-50 dark:hover:bg-indigo-950/40 transition shadow-sm shrink-0"
+            title="Multi-Branch Board"
+          >
+            <Columns2 className="w-3.5 h-3.5" />
+            <span>Compare</span>
+          </button>
           <div className="relative flex items-center gap-0.5 shrink-0" ref={monthPickerRef}>
             <button
               type="button"
@@ -481,7 +529,6 @@ export const SalesAnalytics: React.FC = () => {
               {isYearView && (
                 <span className="text-[9px] font-bold uppercase tracking-wide text-indigo-500 dark:text-indigo-400">Year</span>
               )}
-              <ChevronDown className={`w-3.5 h-3.5 text-slate-400 transition-transform ${monthPickerOpen ? 'rotate-180' : ''}`} />
             </button>
             <button
               type="button"
@@ -635,7 +682,7 @@ export const SalesAnalytics: React.FC = () => {
           value={formatFullPeso(cExpenses)}
           valueFull={formatFullPeso(cExpenses)}
           sub={`${cExpRate.toFixed(1)}% of sales`}
-          color="rose"
+          color="orange"
           size="hero"
         />
         <KPI
@@ -643,7 +690,7 @@ export const SalesAnalytics: React.FC = () => {
           value={formatFullPeso(cProfit)}
           valueFull={formatFullPeso(cProfit)}
           sub={`${cMargin.toFixed(1)}% margin`}
-          color="emerald"
+          color={cProfit >= 0 ? 'emerald' : 'rose'}
           size="hero"
         />
       </div>
@@ -679,14 +726,6 @@ export const SalesAnalytics: React.FC = () => {
                 );
               })()}
             </div>
-            <button
-              type="button"
-              onClick={() => void openCompare()}
-              className="shrink-0 inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-indigo-600 text-white text-[11px] sm:text-xs font-semibold hover:bg-indigo-500 transition shadow-sm"
-            >
-              <GitCompareArrows className="w-3.5 h-3.5" />
-              Compare
-            </button>
           </div>
           <div className="flex-1 min-h-0 w-full max-w-full overflow-visible">
           <ResponsiveContainer width="100%" height="100%">
@@ -808,30 +847,31 @@ export const SalesAnalytics: React.FC = () => {
             <h2 className="text-base font-bold text-slate-900 dark:text-white">Sales by Branch</h2>
             <span className="text-[11px] text-slate-500 hidden sm:inline">tap branch → daily</span>
           </div>
-          <div className="flex-1 min-h-0 overflow-hidden">
-            <table className="w-full table-fixed border-collapse text-[11px] sm:text-sm md:h-full">
+          <div className="flex-1 min-h-0 overflow-x-hidden overflow-y-auto">
+            <table className="w-full table-fixed border-collapse text-[10px] sm:text-sm md:h-full">
               <colgroup>
-                <col style={{ width: '28%' }} />
-                <col style={{ width: '36%' }} />
-                <col style={{ width: '14%' }} />
-                <col style={{ width: '22%' }} />
-                <col className="hidden sm:table-column" style={{ width: '16%' }} />
-                <col className="hidden sm:table-column" style={{ width: '10%' }} />
+                <col className="w-[22%] sm:w-[22%]" />
+                <col className="w-[26%] sm:w-[20%]" />
+                <col className="w-[12%] sm:w-[12%]" />
+                <col className="hidden sm:table-column sm:w-[12%]" />
+                <col className="w-[24%] sm:w-[20%]" />
+                <col className="w-[16%] sm:w-[14%]" />
               </colgroup>
             <thead>
-                <tr className="bg-slate-50 dark:bg-slate-800 text-slate-500 font-bold uppercase text-[9px] sm:text-[10px] tracking-wide">
-                  <th className="px-1.5 sm:px-2 py-2 text-left">Branch</th>
-                  <th className="px-1 sm:px-2 py-2 text-right">Sales</th>
-                  <th className="px-1 sm:px-2 py-2 text-right">Share</th>
-                  <th className="px-1 sm:px-2 py-2 text-right">Orders</th>
-                  <th className="px-2 py-2 text-right hidden sm:table-cell">Profit</th>
-                  <th className="px-2 py-2 text-right hidden sm:table-cell">Margin</th>
+                <tr className="bg-slate-50 dark:bg-slate-800 text-slate-500 font-bold uppercase text-[8px] sm:text-[10px] tracking-wide">
+                  <th className="px-1 sm:px-2 py-2 text-left">Branch</th>
+                  <th className="px-0.5 sm:px-2 py-2 text-right">Sales</th>
+                  <th className="px-0.5 sm:px-2 py-2 text-right">Share</th>
+                  <th className="px-1 sm:px-2 py-2 text-right hidden sm:table-cell">Orders</th>
+                  <th className="px-0.5 sm:px-2 py-2 text-right">Profit</th>
+                  <th className="px-0.5 sm:px-2 py-2 text-right">Margin</th>
               </tr>
             </thead>
               <tbody className="divide-y divide-slate-100 dark:divide-slate-800/50">
                 {branches.map((b, i) => {
                   const share = totalSales > 0 ? (b.totals.sales / totalSales) * 100 : 0;
                   const active = String(selectedBranch) === String(b.branch.id);
+                  const profitTone = b.totals.netProfit >= 0 ? 'text-emerald-500' : 'text-rose-500';
                 return (
                   <tr
                     key={b.branch.id}
@@ -842,19 +882,23 @@ export const SalesAnalytics: React.FC = () => {
                         : 'hover:bg-slate-50 dark:hover:bg-slate-800/60'
                     }`}
                   >
-                    <td className="px-1.5 sm:px-2 py-2 font-bold text-slate-900 dark:text-white truncate">
+                    <td className="px-1 sm:px-2 py-2 font-bold text-slate-900 dark:text-white truncate">
                       <span className="inline-block w-2 h-2 rounded-full mr-1 align-middle shrink-0" style={{ background: getBranchColor(i) }} />
                       <span className="sm:hidden">{shortBranchLabel(b.branch.name)}</span>
                       <span className="hidden sm:inline">{b.branch.name}</span>
                     </td>
-                    <td className="px-1 sm:px-2 py-2 text-right font-semibold tabular-nums whitespace-nowrap text-[10px] sm:text-sm">
-                      {formatFullPeso(b.totals.sales)}
+                    <td className="px-0.5 sm:px-2 py-2 text-right font-semibold tabular-nums truncate" title={formatFullPeso(b.totals.sales)}>
+                      <span className="sm:hidden">{formatPeso(b.totals.sales)}</span>
+                      <span className="hidden sm:inline">{formatFullPeso(b.totals.sales)}</span>
                     </td>
-                    <td className="px-1 sm:px-2 py-2 text-right text-slate-500 tabular-nums">{share.toFixed(0)}%</td>
-                    <td className="px-1 sm:px-2 py-2 text-right tabular-nums">{(b.totals.orders || 0).toLocaleString()}</td>
-                    <td className="px-2 py-2 text-right text-emerald-500 font-bold tabular-nums hidden sm:table-cell">{formatFullPeso(b.totals.netProfit)}</td>
-                    <td className="px-2 py-2 text-right hidden sm:table-cell">
-                      <span className={`font-bold tabular-nums ${b.totals.profitRate >= profitMargin ? 'text-emerald-500' : 'text-rose-500'}`}>
+                    <td className="px-0.5 sm:px-2 py-2 text-right text-slate-500 tabular-nums">{share.toFixed(0)}%</td>
+                    <td className="px-1 sm:px-2 py-2 text-right tabular-nums hidden sm:table-cell">{(b.totals.orders || 0).toLocaleString()}</td>
+                    <td className={`px-0.5 sm:px-2 py-2 text-right font-bold tabular-nums truncate ${profitTone}`} title={formatFullPeso(b.totals.netProfit)}>
+                      <span className="sm:hidden">{formatPeso(b.totals.netProfit)}</span>
+                      <span className="hidden sm:inline">{formatFullPeso(b.totals.netProfit)}</span>
+                    </td>
+                    <td className="px-0.5 sm:px-2 py-2 text-right">
+                      <span className={`font-bold tabular-nums ${profitTone}`}>
                         {b.totals.profitRate.toFixed(1)}%
                       </span>
                     </td>
@@ -869,14 +913,18 @@ export const SalesAnalytics: React.FC = () => {
                       : 'bg-indigo-50/40 dark:bg-indigo-950/20 hover:bg-indigo-100/50 dark:hover:bg-indigo-900/30'
                   }`}
                 >
-                  <td className="px-1.5 sm:px-2 py-2 text-indigo-800 dark:text-indigo-200">TOTAL</td>
-                  <td className="px-1 sm:px-2 py-2 text-right tabular-nums whitespace-nowrap text-[10px] sm:text-sm">
-                    {formatFullPeso(totalSales)}
+                  <td className="px-1 sm:px-2 py-2 text-indigo-800 dark:text-indigo-200">TOTAL</td>
+                  <td className="px-0.5 sm:px-2 py-2 text-right tabular-nums truncate" title={formatFullPeso(totalSales)}>
+                    <span className="sm:hidden">{formatPeso(totalSales)}</span>
+                    <span className="hidden sm:inline">{formatFullPeso(totalSales)}</span>
                   </td>
-                  <td className="px-1 sm:px-2 py-2 text-right tabular-nums">100%</td>
-                  <td className="px-1 sm:px-2 py-2 text-right tabular-nums">{totalOrders.toLocaleString()}</td>
-                  <td className="px-2 py-2 text-right text-emerald-600 tabular-nums hidden sm:table-cell">{formatFullPeso(totalProfit)}</td>
-                  <td className="px-2 py-2 text-right tabular-nums hidden sm:table-cell">{profitMargin.toFixed(1)}%</td>
+                  <td className="px-0.5 sm:px-2 py-2 text-right tabular-nums">100%</td>
+                  <td className="px-1 sm:px-2 py-2 text-right tabular-nums hidden sm:table-cell">{totalOrders.toLocaleString()}</td>
+                  <td className={`px-0.5 sm:px-2 py-2 text-right tabular-nums truncate ${totalProfit >= 0 ? 'text-emerald-600' : 'text-rose-500'}`} title={formatFullPeso(totalProfit)}>
+                    <span className="sm:hidden">{formatPeso(totalProfit)}</span>
+                    <span className="hidden sm:inline">{formatFullPeso(totalProfit)}</span>
+                  </td>
+                  <td className={`px-0.5 sm:px-2 py-2 text-right tabular-nums ${totalProfit >= 0 ? 'text-emerald-600' : 'text-rose-500'}`}>{profitMargin.toFixed(1)}%</td>
                 </tr>
             </tbody>
           </table>
@@ -1050,7 +1098,7 @@ export const SalesAnalytics: React.FC = () => {
         </div>
       )}
 
-      {/* Menu daily sales — swipe left/right to change item */}
+      {/* Daily sales — centered small popup, fit width, no side scroll */}
       {menuPopup && (() => {
         const withSales = menuDaily.filter(d => d.qty > 0);
         const best = withSales.length
@@ -1061,126 +1109,199 @@ export const SalesAnalytics: React.FC = () => {
         const menuIdx = topItems.findIndex(
           t => String(t.menuId) === String(menuPopup.menuId) && String(t.branchId) === String(menuPopup.branchId)
         );
+        const canPrev = menuIdx > 0;
+        const canNext = menuIdx >= 0 && menuIdx < topItems.length - 1;
+        const tickSize = isDesktop ? 10 : (menuDaily.length > 20 ? 6 : 7);
         return (
-          <div className="fixed inset-0 z-[60] flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-md" onClick={() => setMenuPopup(null)}>
+          <ModalPortal>
             <div
-              className="w-full max-w-[400px] bg-white dark:bg-slate-900 rounded-2xl border border-slate-200/60 dark:border-slate-700/80 shadow-2xl shadow-black/50 overflow-hidden flex flex-col touch-pan-y"
-              onClick={e => e.stopPropagation()}
-              onTouchStart={e => { menuSwipeX.current = e.touches[0]?.clientX ?? null; }}
-              onTouchEnd={e => {
-                const start = menuSwipeX.current;
-                menuSwipeX.current = null;
-                if (start == null || menuLoading) return;
-                const end = e.changedTouches[0]?.clientX;
-                if (end == null) return;
-                const dx = end - start;
-                if (Math.abs(dx) < 50) return;
-                void shiftMenuPopup(dx < 0 ? 1 : -1);
-              }}
+              className="fixed inset-0 z-[80] flex items-center justify-center p-3 sm:p-5 md:p-8 bg-slate-950/55 dark:bg-slate-950/70 backdrop-blur-[2px]"
+              onClick={() => setMenuPopup(null)}
             >
-              <div className="px-4 pt-4 pb-3 border-b border-slate-100 dark:border-slate-800 flex items-start justify-between gap-3 shrink-0">
-                <div className="min-w-0 flex-1">
-                  <div className="text-[10px] font-bold uppercase tracking-widest text-amber-400">
-                    Daily sales
-                    {menuIdx >= 0 && (
-                      <span className="text-slate-500 font-semibold normal-case tracking-normal ml-1.5">
-                        · {menuIdx + 1}/{topItems.length}
-                      </span>
+              <div
+                ref={menuCardRef}
+                role="dialog"
+                aria-label="Daily sales"
+                className="w-full max-w-[min(100%,420px)] sm:max-w-[560px] md:max-w-[820px] lg:max-w-[960px] max-h-[min(90dvh,720px)] md:max-h-[min(92dvh,860px)] overflow-x-hidden overflow-y-auto rounded-2xl border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-900 p-3 sm:p-4 md:p-5 shadow-2xl shadow-slate-900/20 dark:shadow-black/50 touch-pan-y"
+                onClick={e => e.stopPropagation()}
+                onTouchStart={e => { menuSwipeX.current = e.touches[0]?.clientX ?? null; }}
+                onTouchEnd={e => {
+                  const start = menuSwipeX.current;
+                  menuSwipeX.current = null;
+                  if (start == null || menuLoading) return;
+                  const end = e.changedTouches[0]?.clientX;
+                  if (end == null) return;
+                  const dx = end - start;
+                  if (Math.abs(dx) < 50) return;
+                  void shiftMenuPopup(dx < 0 ? 1 : -1);
+                }}
+              >
+                <div className="mb-3 md:mb-4 border-b border-slate-100 dark:border-slate-700 pb-2.5 md:pb-3 flex items-start justify-between gap-2">
+                  <div className="min-w-0 flex-1">
+                    <p className="text-[10px] md:text-xs font-bold uppercase tracking-widest text-amber-500 dark:text-amber-400">
+                      Daily sales
+                      {menuIdx >= 0 && (
+                        <span className="text-slate-400 dark:text-slate-500 font-semibold normal-case tracking-normal ml-1">
+                          · {menuIdx + 1}/{topItems.length}
+                        </span>
+                      )}
+                    </p>
+                    <p className="text-sm sm:text-base md:text-xl font-bold tracking-wide text-indigo-600 dark:text-indigo-400 mt-0.5 line-clamp-2" title={menuPopup.name}>
+                      {menuPopup.name}
+                    </p>
+                    {menuPopup.branchName && (
+                      <p className="mt-0.5 text-xs md:text-sm leading-snug text-slate-500 dark:text-slate-400 truncate">{menuPopup.branchName}</p>
+                    )}
+                    <p className="md:hidden text-[9px] text-slate-400 mt-0.5">Swipe ← → next item</p>
+                  </div>
+                  <div className="flex items-center gap-1 shrink-0">
+                    <button
+                      type="button"
+                      disabled={!canPrev || menuLoading}
+                      onClick={() => void shiftMenuPopup(-1)}
+                      className="p-1.5 md:p-2 rounded-full bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-300 hover:text-slate-800 dark:hover:text-white disabled:opacity-30 disabled:pointer-events-none"
+                      aria-label="Previous item"
+                      title="Previous"
+                    >
+                      <ChevronLeft className="w-4 h-4 md:w-5 md:h-5" />
+                    </button>
+                    <button
+                      type="button"
+                      disabled={!canNext || menuLoading}
+                      onClick={() => void shiftMenuPopup(1)}
+                      className="p-1.5 md:p-2 rounded-full bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-300 hover:text-slate-800 dark:hover:text-white disabled:opacity-30 disabled:pointer-events-none"
+                      aria-label="Next item"
+                      title="Next"
+                    >
+                      <ChevronRight className="w-4 h-4 md:w-5 md:h-5" />
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setMenuPopup(null)}
+                      className="p-1.5 md:p-2 rounded-full bg-slate-100 dark:bg-slate-800 text-slate-400 hover:text-slate-700 dark:hover:text-white"
+                      aria-label="Close"
+                    >
+                      <X className="w-3.5 h-3.5 md:w-4 md:h-4" />
+                    </button>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-3 gap-1.5 sm:gap-2 md:gap-3 mb-3 md:mb-4">
+                  <div className="rounded-lg md:rounded-xl bg-slate-50 dark:bg-slate-800/80 px-1.5 sm:px-2 md:px-3 py-2 md:py-3 text-center min-w-0 border border-slate-100 dark:border-slate-700/60">
+                    <div className="text-[8px] sm:text-[9px] md:text-[10px] font-bold uppercase text-slate-500 dark:text-slate-400 tracking-wide">Best day</div>
+                    <div className="text-xs sm:text-sm md:text-lg font-bold text-emerald-600 dark:text-emerald-400 mt-0.5 truncate">
+                      {best ? `${best.dayNum} · ${best.dayName.slice(0, 3)}` : '—'}
+                    </div>
+                  </div>
+                  <div className="rounded-lg md:rounded-xl bg-slate-50 dark:bg-slate-800/80 px-1.5 sm:px-2 md:px-3 py-2 md:py-3 text-center min-w-0 border border-slate-100 dark:border-slate-700/60">
+                    <div className="text-[8px] sm:text-[9px] md:text-[10px] font-bold uppercase text-slate-500 dark:text-slate-400 tracking-wide">Day sales</div>
+                    <div
+                      className="text-xs sm:text-sm md:text-lg font-bold text-emerald-600 dark:text-emerald-400 tabular-nums mt-0.5 truncate"
+                      title={best ? formatFullPeso(best.revenue) : undefined}
+                    >
+                      {best ? (isDesktop ? formatFullPeso(best.revenue) : formatPeso(best.revenue)) : '—'}
+                    </div>
+                    <div className="text-[9px] sm:text-[10px] md:text-xs text-indigo-500 dark:text-indigo-400 font-semibold tabular-nums mt-0.5 truncate">
+                      {best ? `${best.qty.toLocaleString()} sold` : ''}
+                    </div>
+                  </div>
+                  <div className="rounded-lg md:rounded-xl bg-slate-50 dark:bg-slate-800/80 px-1.5 sm:px-2 md:px-3 py-2 md:py-3 text-center min-w-0 border border-slate-100 dark:border-slate-700/60">
+                    <div className="text-[8px] sm:text-[9px] md:text-[10px] font-bold uppercase text-slate-500 dark:text-slate-400 tracking-wide">Month</div>
+                    <div
+                      className="text-xs sm:text-sm md:text-lg font-bold text-emerald-600 dark:text-emerald-400 tabular-nums mt-0.5 truncate"
+                      title={formatFullPeso(totalRev)}
+                    >
+                      {isDesktop ? formatFullPeso(totalRev) : formatPeso(totalRev)}
+                    </div>
+                    <div className="text-[9px] sm:text-[10px] md:text-xs text-indigo-500 dark:text-indigo-400 font-semibold tabular-nums mt-0.5 truncate">
+                      {totalQty.toLocaleString()} sold
+                    </div>
+                  </div>
+                </div>
+
+                <div className="rounded-lg md:rounded-xl bg-slate-50 dark:bg-slate-800/50 px-1.5 sm:px-2.5 md:px-3 py-2.5 md:py-3 border border-slate-100 dark:border-slate-700 overflow-hidden">
+                  <div className="flex items-center justify-between mb-1.5 md:mb-2 gap-2 px-1">
+                    <p className="text-[10px] sm:text-[11px] md:text-xs font-bold uppercase tracking-wide text-slate-500 dark:text-slate-400 truncate">{periodLabel}</p>
+                    <p className="text-[9px] sm:text-[10px] md:text-xs text-slate-400 dark:text-slate-500 shrink-0">Green = peak</p>
+                  </div>
+                  <div className="h-[170px] sm:h-[220px] md:h-[320px] lg:h-[360px] w-full max-w-full overflow-hidden">
+                    {menuLoading ? (
+                      <div className="flex items-center justify-center h-full text-slate-400"><Loader2 className="w-5 h-5 animate-spin" /></div>
+                    ) : menuDaily.length === 0 ? (
+                      <p className="text-xs text-slate-400 text-center py-8">No daily sales for this item.</p>
+                    ) : (
+                      <ResponsiveContainer width="100%" height="100%" minWidth={0}>
+                        <BarChart
+                          data={menuDaily}
+                          margin={{ top: 8, right: isDesktop ? 8 : 2, left: isDesktop ? 0 : -6, bottom: 2 }}
+                          barCategoryGap={isDesktop ? '12%' : '8%'}
+                        >
+                          <CartesianGrid
+                            strokeDasharray="3 3"
+                            vertical={false}
+                            stroke={isDark ? '#334155' : '#e2e8f0'}
+                          />
+                          <XAxis
+                            dataKey="dayNum"
+                            interval={0}
+                            height={isDesktop ? 22 : 18}
+                            tick={<DayAxisTick points={menuDaily} dayKey="dayNum" fontSize={tickSize} />}
+                            tickLine={false}
+                            axisLine={{ stroke: isDark ? '#475569' : '#cbd5e1', strokeOpacity: 0.8 }}
+                          />
+                          <YAxis
+                            tick={{ fontSize: isDesktop ? 11 : tickSize + 1, fill: '#94a3b8' }}
+                            width={isDesktop ? 32 : 22}
+                            tickCount={5}
+                            allowDecimals={false}
+                            axisLine={false}
+                            tickLine={false}
+                          />
+                          <Tooltip
+                            formatter={(v: any, _name: any, props: any) => {
+                              const rev = Number(props?.payload?.revenue) || 0;
+                              return [
+                                `${Number(v).toLocaleString()} sold · ${formatFullPeso(rev)}`,
+                                'Day sales',
+                              ];
+                            }}
+                            labelFormatter={(_, payload: any) => {
+                              const p = payload?.[0]?.payload;
+                              return p ? `${p.label} (${p.dayName})` : '';
+                            }}
+                            contentStyle={{
+                              backgroundColor: isDark ? '#0f172a' : '#ffffff',
+                              borderRadius: '10px',
+                              border: isDark ? '1px solid #334155' : '1px solid #e2e8f0',
+                              fontSize: '11px',
+                              boxShadow: '0 8px 24px rgba(0,0,0,.18)',
+                            }}
+                            labelStyle={{ color: isDark ? '#f8fafc' : '#0f172a', fontWeight: 700, marginBottom: 2 }}
+                            itemStyle={{ color: isDark ? '#e2e8f0' : '#334155', fontWeight: 600 }}
+                            cursor={{ fill: isDark ? 'rgba(148, 163, 184, 0.12)' : 'rgba(100, 116, 139, 0.1)' }}
+                          />
+                          <Bar dataKey="qty" name="qty" radius={[2, 2, 0, 0]} isAnimationActive={false}>
+                            {menuDaily.map((e, i) => (
+                              <Cell
+                                key={i}
+                                fill={
+                                  best && e.date === best.date
+                                    ? '#10b981'
+                                    : e.qty > 0
+                                      ? '#818cf8'
+                                      : (isDark ? '#334155' : '#e2e8f0')
+                                }
+                              />
+                            ))}
+                          </Bar>
+                        </BarChart>
+                      </ResponsiveContainer>
                     )}
                   </div>
-                  <h3 className="text-base font-bold text-slate-900 dark:text-white mt-0.5 leading-snug line-clamp-2" title={menuPopup.name}>
-                    {menuPopup.name}
-                  </h3>
-                  {menuPopup.branchName && (
-                    <div className="text-[11px] text-slate-500 mt-0.5 truncate">{menuPopup.branchName}</div>
-                  )}
                 </div>
-                <button type="button" onClick={() => setMenuPopup(null)} className="p-2 rounded-full bg-slate-100 dark:bg-slate-800 text-slate-400 hover:text-white shrink-0">
-                  <X className="w-4 h-4" />
-                </button>
-              </div>
-
-              <div className="grid grid-cols-3 gap-2 px-4 py-3 shrink-0">
-                <div className="rounded-xl bg-slate-50 dark:bg-slate-800/70 px-2 py-2 text-center min-w-0">
-                  <div className="text-[9px] font-bold uppercase text-slate-500 tracking-wide">Best day</div>
-                  <div className="text-sm font-bold text-emerald-400 mt-0.5 truncate">
-                    {best ? `${best.dayNum} · ${best.dayName.slice(0, 3)}` : '—'}
-                  </div>
-                </div>
-                <div className="rounded-xl bg-slate-50 dark:bg-slate-800/70 px-2 py-2 text-center min-w-0">
-                  <div className="text-[9px] font-bold uppercase text-slate-500 tracking-wide">Day sales</div>
-                  <div className="text-sm font-bold text-emerald-400 tabular-nums mt-0.5 truncate" title={best ? formatFullPeso(best.revenue) : undefined}>
-                    {best ? formatFullPeso(best.revenue) : '—'}
-                  </div>
-                  <div className="text-[10px] text-indigo-400 font-semibold tabular-nums mt-0.5">
-                    {best ? `${best.qty.toLocaleString()} sold` : ''}
-                  </div>
-                </div>
-                <div className="rounded-xl bg-slate-50 dark:bg-slate-800/70 px-2 py-2 text-center min-w-0">
-                  <div className="text-[9px] font-bold uppercase text-slate-500 tracking-wide">Month total</div>
-                  <div className="text-sm font-bold text-emerald-400 tabular-nums mt-0.5 truncate" title={formatFullPeso(totalRev)}>
-                    {formatFullPeso(totalRev)}
-                  </div>
-                  <div className="text-[10px] text-indigo-400 font-semibold tabular-nums mt-0.5">
-                    {totalQty.toLocaleString()} sold
-                  </div>
-                </div>
-              </div>
-
-              <div className="px-4 flex items-center justify-between shrink-0 mb-1">
-                <span className="text-xs font-bold text-slate-400 uppercase tracking-wider">{periodLabel}</span>
-                <span className="text-[10px] text-slate-500">Green = peak</span>
-              </div>
-
-              <div className="px-2 pb-3 h-[220px] shrink-0 overflow-visible">
-                {menuLoading ? (
-                  <div className="flex items-center justify-center h-full text-slate-400"><Loader2 className="w-6 h-6 animate-spin" /></div>
-                ) : menuDaily.length === 0 ? (
-                  <p className="text-sm text-slate-400 text-center py-10">No daily sales for this item.</p>
-                ) : (
-                  <ResponsiveContainer width="100%" height="100%">
-                    <BarChart data={menuDaily} margin={{ top: 6, right: 2, left: 0, bottom: 4 }} barCategoryGap="8%">
-                      <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#334155" opacity={0.1} />
-                      <XAxis
-                        dataKey="dayNum"
-                        interval={0}
-                        height={18}
-                        tick={<DayAxisTick points={menuDaily} dayKey="dayNum" />}
-                        tickLine={false}
-                        axisLine={{ stroke: '#334155', strokeOpacity: 0.35 }}
-                      />
-                      <YAxis tick={{ fontSize: 7, fill: '#64748b' }} width={22} allowDecimals={false} axisLine={false} tickLine={false} />
-                      <Tooltip
-                        formatter={(v: any, _name: any, props: any) => {
-                          const rev = Number(props?.payload?.revenue) || 0;
-                          return [
-                            `${Number(v).toLocaleString()} sold · ${formatFullPeso(rev)}`,
-                            'Day sales',
-                          ];
-                        }}
-                        labelFormatter={(_, payload: any) => {
-                          const p = payload?.[0]?.payload;
-                          return p ? `${p.label} (${p.dayName})` : '';
-                        }}
-                        contentStyle={{ backgroundColor: '#0f172a', borderRadius: '12px', border: '1px solid #334155', fontSize: '12px' }}
-                        labelStyle={{ color: '#f8fafc', fontWeight: 700, marginBottom: 4 }}
-                        itemStyle={{ color: '#e2e8f0', fontWeight: 600 }}
-                        cursor={{ fill: 'rgba(148, 163, 184, 0.1)' }}
-                      />
-                      <Bar dataKey="qty" name="qty" radius={[2, 2, 0, 0]} isAnimationActive={false}>
-                        {menuDaily.map((e, i) => (
-                          <Cell
-                            key={i}
-                            fill={best && e.date === best.date ? '#34d399' : e.qty > 0 ? '#818cf8' : '#1e293b'}
-                          />
-                        ))}
-                      </Bar>
-                    </BarChart>
-                  </ResponsiveContainer>
-                )}
               </div>
             </div>
-          </div>
+          </ModalPortal>
         );
       })()}
 
@@ -1282,14 +1403,14 @@ export const SalesAnalytics: React.FC = () => {
       )}
 
       {/* Mobile-only floating branch picker — same colors as desktop */}
-      {!dayPopup && !menuPopup && !compareOpen && !isDesktop && (
+      {!dayPopup && !menuPopup && !compareOpen && !branchCompareOpen && !isDesktop && (
       <div
         ref={branchMenuRef}
         className="fixed bottom-0 inset-x-0 z-50 px-3 pt-2 pb-[max(0.75rem,env(safe-area-inset-bottom))] pointer-events-none md:hidden"
       >
         <div className="pointer-events-auto mx-auto w-[min(68%,280px)] relative">
           {branchMenuOpen && (
-            <div className="absolute bottom-full left-0 right-0 mb-2 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 shadow-xl overflow-hidden max-h-56 overflow-y-auto">
+            <div className="absolute bottom-full left-0 right-0 mb-2 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 shadow-xl overflow-hidden">
               <button
                 type="button"
                 onClick={() => { setSelectedBranch('all'); setBranchMenuOpen(false); }}
@@ -1326,10 +1447,16 @@ export const SalesAnalytics: React.FC = () => {
             <span className="truncate flex-1 text-left text-[13px]">{branchLabel}</span>
             <ChevronDown className={`w-4 h-4 text-white/80 shrink-0 transition-transform ${branchMenuOpen ? 'rotate-180' : ''}`} />
           </button>
-              </div>
-            </div>
+        </div>
+      </div>
       )}
-            </div>
+
+      <BranchComparisonModal
+        open={branchCompareOpen}
+        onClose={() => setBranchCompareOpen(false)}
+        initialRange={dateRange}
+      />
+    </div>
   );
 };
 
@@ -1346,6 +1473,7 @@ const KPI: React.FC<{
     indigo: 'text-indigo-400',
     rose: 'text-rose-400',
     emerald: 'text-emerald-400',
+    orange: 'text-orange-400',
     amber: 'text-amber-400',
     sky: 'text-sky-400',
     violet: 'text-violet-400',

@@ -1,1 +1,4 @@
 @import "tailwindcss";
+
+/* Class-based dark mode (manual Sun/Moon toggle) — Tailwind v4 default is prefers-color-scheme only */
+@custom-variant dark (&:where(.dark, .dark *));

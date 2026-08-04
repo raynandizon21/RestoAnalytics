@@ -5,6 +5,8 @@ export interface Branch {
   locationTag: string;
   manager: string;
   isFlagship?: boolean;
+  /** Relative path e.g. /uploads/branches/foo.webp */
+  logo?: string | null;
 }
 
 export interface BranchTotals {
@@ -111,4 +113,8 @@ export interface PopupModalState {
   dateRangeBaseline?: string;
   categoryName?: string;
   formulaDescription?: string;
+  /** When true (expense compare), index ↑ = bad (red). */
+  invertSentiment?: boolean;
+  /** Viewport coords for anchored popover (restoAdmin-style). */
+  anchor?: { top: number; left: number } | null;
 }
