@@ -1,4 +1,15 @@
 import { BranchComparisonData } from '../types';
+import {
+  branchCardsToMetricMaps,
+  buildMainExpenseCategory,
+  buildWindowCell,
+  emptyWindowCell,
+  formatYmdRangeLabel,
+  getMtdVsFullPreviousMonth,
+  getSamePeriodWindows,
+  sumMainExpenseBuckets,
+  COMPARE_METRIC_LABELS,
+} from '../utils/branchComparison';
 
 // ─── Shared Types ───
 
@@ -19,6 +30,7 @@ export interface DailySalesPoint {
 export interface BranchCard {
   id: number | string;
   name: string;
+  logo?: string | null;
   totalSales: number;
   totalExpenses: number;
   totalOrders: number;
@@ -41,6 +53,8 @@ export interface DashboardBundle {
   topProductsData: Array<{ name: string; sales: number }>;
   trendData: Array<{ name: string; totalSales: number; totalExpenses: number; date?: string }>;
   expenseCategoryByBranch?: Record<string, Record<string, number>>;
+  expenseRentByBranch?: Record<string, number>;
+  expenseSalaryByBranch?: Record<string, number>;
 }
 
 // ─── Colors ───
@@ -361,7 +375,7 @@ export async function fetchBranchComparison(
     });
 
     return {
-      branch: { id: bid, name: b.name, city: '', locationTag: '', manager: '' },
+      branch: { id: bid, name: b.name, city: '', locationTag: '', manager: '', logo: b.logo || null },
       totals: {
         sales,
         expenses,
@@ -370,14 +384,166 @@ export async function fetchBranchComparison(
         profitRate: +profRate.toFixed(1),
         orders,
       },
-      salesWindows: { samePeriod: win(sales, 1.05), fullPrevMonth: win(sales, 1.03), threeMonthAvg: win(sales, 1.07) },
-      expensesWindows: { samePeriod: win(expenses, 0.98, true), fullPrevMonth: win(expenses, 1.01, true), threeMonthAvg: win(expenses, 1.02, true) },
-      profitWindows: { samePeriod: win(profit, 1.12), fullPrevMonth: win(profit, 1.08), threeMonthAvg: win(profit, 1.15) },
+      salesWindows: { samePeriod: win(sales, 1.05), fullPrevMonth: win(sales, 1.03), threeMonthAvg: emptyWindowCell() },
+      expensesWindows: { samePeriod: win(expenses, 0.98, true), fullPrevMonth: win(expenses, 1.01, true), threeMonthAvg: emptyWindowCell() },
+      profitWindows: { samePeriod: win(profit, 1.12), fullPrevMonth: win(profit, 1.08), threeMonthAvg: emptyWindowCell() },
       mainExpenses: {
-        foodLiquor: { id: 'food', labelKorean: '', labelEnglish: 'Food & Beverage', amount: Math.round(food), ratioOfSales: pct(food) },
-        rent: { id: 'rent', labelKorean: '', labelEnglish: 'Rent', amount: Math.round(rent), ratioOfSales: pct(rent) },
-        labor: { id: 'labor', labelKorean: '', labelEnglish: 'Labor', amount: Math.round(labor), ratioOfSales: pct(labor) },
-        others: { id: 'others', labelKorean: '', labelEnglish: 'Others', amount: Math.round(others), ratioOfSales: pct(others) },
+        foodLiquor: { id: 'food', labelKorean: COMPARE_METRIC_LABELS.foodSupplies, labelEnglish: 'Food & Beverage', amount: Math.round(food), ratioOfSales: pct(food) },
+        rent: { id: 'rent', labelKorean: COMPARE_METRIC_LABELS.rent, labelEnglish: 'Rent', amount: Math.round(rent), ratioOfSales: pct(rent) },
+        labor: { id: 'labor', labelKorean: COMPARE_METRIC_LABELS.salary, labelEnglish: 'Labor', amount: Math.round(labor), ratioOfSales: pct(labor) },
+        others: { id: 'others', labelKorean: COMPARE_METRIC_LABELS.others, labelEnglish: 'Others', amount: Math.round(others), ratioOfSales: pct(others) },
+      },
+    };
+  });
+}
+
+/**
+ * Full Branch Comparison board (restoAdmin-style windows).
+ * Fetches selected period + same-period cur/prev + MTD vs full prior month.
+ * Does NOT compute 평균 대비 (3-month average).
+ */
+export async function fetchBranchComparisonBoard(
+  range?: DateRange,
+): Promise<BranchComparisonData[] | null> {
+  const active = range || getCurrentMonthRange();
+  const start = active.start_date;
+  const end = active.end_date;
+
+  const samePeriod = getSamePeriodWindows(start, end);
+  const mtdVsPrev = getMtdVsFullPreviousMonth(end);
+  if (!samePeriod || !mtdVsPrev) return null;
+
+  const toApi = (r: { start: string; end: string }): DateRange => ({
+    start_date: r.start,
+    end_date: r.end,
+  });
+
+  const [selectedBundle, sameCur, samePrev, mtdCur, fullPrev] = await Promise.all([
+    fetchDashboard(true, undefined, active),
+    fetchDashboard(true, undefined, toApi(samePeriod.current)),
+    fetchDashboard(true, undefined, toApi(samePeriod.previous)),
+    fetchDashboard(true, undefined, toApi(mtdVsPrev.current)),
+    fetchDashboard(true, undefined, toApi(mtdVsPrev.previous)),
+  ]);
+
+  if (!selectedBundle?.branchCardsData?.length) return null;
+
+  const selectedMaps = branchCardsToMetricMaps(
+    selectedBundle.branchCardsData,
+    selectedBundle.expenseCategoryByBranch,
+  );
+  const sameCurMaps = branchCardsToMetricMaps(
+    sameCur?.branchCardsData || [],
+    sameCur?.expenseCategoryByBranch,
+  );
+  const samePrevMaps = branchCardsToMetricMaps(
+    samePrev?.branchCardsData || [],
+    samePrev?.expenseCategoryByBranch,
+  );
+  const mtdCurMaps = branchCardsToMetricMaps(
+    mtdCur?.branchCardsData || [],
+    mtdCur?.expenseCategoryByBranch,
+  );
+  const fullPrevMaps = branchCardsToMetricMaps(
+    fullPrev?.branchCardsData || [],
+    fullPrev?.expenseCategoryByBranch,
+  );
+
+  const sameCurLabel = formatYmdRangeLabel(samePeriod.current);
+  const samePrevLabel = formatYmdRangeLabel(samePeriod.previous);
+  const mtdCurLabel = formatYmdRangeLabel(mtdVsPrev.current);
+  const fullPrevLabel = formatYmdRangeLabel(mtdVsPrev.previous);
+
+  const sorted = sortBranchesByPreferredOrder(
+    selectedBundle.branchCardsData.map((b) => ({
+      id: b.id,
+      name: b.name,
+      logo: b.logo || null,
+      totalSales: Number(b.totalSales) || 0,
+      totalExpenses: Number(b.totalExpenses) || 0,
+      totalOrders: Number(b.totalOrders) || 0,
+    })),
+  );
+
+  return sorted.map((b) => {
+    const bid = String(b.id);
+    const sales = selectedMaps.sales[bid] ?? (Number(b.totalSales) || 0);
+    const expenses = selectedMaps.expenses[bid] ?? (Number(b.totalExpenses) || 0);
+    const profit = sales - expenses;
+    const orders = Number(b.totalOrders) || 0;
+    const expRate = sales > 0 ? (expenses / sales) * 100 : 0;
+    const profRate = sales > 0 ? (profit / sales) * 100 : 0;
+
+    const cats = selectedBundle.expenseCategoryByBranch?.[bid] || {};
+    const buckets = sumMainExpenseBuckets(cats);
+    let food = buckets.food;
+    let rent = buckets.rent;
+    let salary = buckets.salary;
+    let other = buckets.other;
+
+    const backendRent = Number(selectedBundle.expenseRentByBranch?.[bid]) || 0;
+    const backendSalary = Number(selectedBundle.expenseSalaryByBranch?.[bid]) || 0;
+    if (backendRent > rent) {
+      const extra = backendRent - rent;
+      rent = backendRent;
+      if (other >= extra) other -= extra;
+      else if (food >= extra) food -= extra;
+      else {
+        const fromOther = Math.min(other, extra);
+        other -= fromOther;
+        food = Math.max(0, food - (extra - fromOther));
+      }
+    }
+    salary = Math.max(salary, backendSalary);
+    const remaining = expenses - food - rent - salary;
+    if (remaining > 0) other = remaining;
+
+    const metricCell = (
+      metric: 'sales' | 'expenses' | 'profit',
+      curMaps: typeof selectedMaps,
+      prevMaps: typeof selectedMaps,
+      curLabel: string,
+      prevLabel: string,
+      hasArrow: boolean,
+    ) =>
+      buildWindowCell(
+        curMaps[metric][bid] ?? 0,
+        prevMaps[metric][bid] ?? 0,
+        curLabel,
+        prevLabel,
+        { hasArrow, invertSentiment: metric === 'expenses' },
+      );
+
+    return {
+      branch: { id: bid, name: b.name, city: '', locationTag: '', manager: '', logo: b.logo || null },
+      totals: {
+        sales,
+        expenses,
+        netProfit: profit,
+        expenseRate: +expRate.toFixed(1),
+        profitRate: +profRate.toFixed(1),
+        orders,
+      },
+      salesWindows: {
+        samePeriod: metricCell('sales', sameCurMaps, samePrevMaps, sameCurLabel, samePrevLabel, true),
+        fullPrevMonth: metricCell('sales', mtdCurMaps, fullPrevMaps, mtdCurLabel, fullPrevLabel, false),
+        threeMonthAvg: emptyWindowCell(),
+      },
+      expensesWindows: {
+        samePeriod: metricCell('expenses', sameCurMaps, samePrevMaps, sameCurLabel, samePrevLabel, true),
+        fullPrevMonth: metricCell('expenses', mtdCurMaps, fullPrevMaps, mtdCurLabel, fullPrevLabel, false),
+        threeMonthAvg: emptyWindowCell(),
+      },
+      profitWindows: {
+        samePeriod: metricCell('profit', sameCurMaps, samePrevMaps, sameCurLabel, samePrevLabel, true),
+        fullPrevMonth: metricCell('profit', mtdCurMaps, fullPrevMaps, mtdCurLabel, fullPrevLabel, false),
+        threeMonthAvg: emptyWindowCell(),
+      },
+      mainExpenses: {
+        foodLiquor: buildMainExpenseCategory('food', COMPARE_METRIC_LABELS.foodSupplies, food, sales),
+        rent: buildMainExpenseCategory('rent', COMPARE_METRIC_LABELS.rent, rent, sales),
+        labor: buildMainExpenseCategory('labor', COMPARE_METRIC_LABELS.salary, salary, sales),
+        others: buildMainExpenseCategory('others', COMPARE_METRIC_LABELS.others, other, sales),
       },
     };
   });

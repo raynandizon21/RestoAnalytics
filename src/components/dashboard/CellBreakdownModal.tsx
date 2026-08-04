@@ -1,19 +1,19 @@
-import React from 'react';
-import { motion, AnimatePresence } from 'motion/react';
-import { X, Calculator, Calendar, ArrowUpRight, ArrowDownRight, Percent, Info, TrendingUp, TrendingDown } from 'lucide-react';
+import React, { useEffect, useLayoutEffect, useRef } from 'react';
 import { PopupModalState } from '../../types';
+import { ModalPortal } from '../layout/ModalPortal';
 
 interface Props {
   modalState: PopupModalState;
   onClose: () => void;
 }
 
+/** restoAdmin-style anchored floating card — not a centered popup modal. */
 export const CellBreakdownModal: React.FC<Props> = ({ modalState, onClose }) => {
-  if (!modalState.isOpen) return null;
+  const cardRef = useRef<HTMLDivElement>(null);
 
   const {
+    isOpen,
     type,
-    title,
     metricLabel,
     branchName,
     amount = 0,
@@ -24,207 +24,190 @@ export const CellBreakdownModal: React.FC<Props> = ({ modalState, onClose }) => 
     dateRangeCurrent,
     dateRangeBaseline,
     categoryName,
-    formulaDescription,
+    invertSentiment = false,
+    anchor,
   } = modalState;
 
-  const formatCurrency = (val: number) =>
-    `₱${val.toLocaleString('en-PH', { maximumFractionDigits: 0 })}`;
+  useEffect(() => {
+    if (!isOpen) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onClose();
+    };
+    const onDoc = (e: MouseEvent) => {
+      const el = cardRef.current;
+      if (!el) return;
+      if (!el.contains(e.target as Node)) onClose();
+    };
+    window.addEventListener('keydown', onKey);
+    // Defer so the opening click does not immediately close the card
+    const t = window.setTimeout(() => {
+      document.addEventListener('mousedown', onDoc, true);
+    }, 0);
+    return () => {
+      window.clearTimeout(t);
+      window.removeEventListener('keydown', onKey);
+      document.removeEventListener('mousedown', onDoc, true);
+    };
+  }, [isOpen, onClose]);
+
+  useLayoutEffect(() => {
+    if (!isOpen || !cardRef.current) return;
+    const el = cardRef.current;
+    const pad = 8;
+    const rect = el.getBoundingClientRect();
+    const mobile = window.innerWidth < 640;
+    let top = anchor?.top ?? Math.max(pad, (window.innerHeight - rect.height) / 2);
+    let left = anchor?.left ?? Math.max(pad, (window.innerWidth - rect.width) / 2);
+    if (mobile) {
+      left = Math.max(pad, (window.innerWidth - rect.width) / 2);
+    }
+    if (top + rect.height > window.innerHeight - pad) {
+      top = Math.max(pad, window.innerHeight - rect.height - pad);
+    }
+    if (left + rect.width > window.innerWidth - pad) {
+      left = Math.max(pad, window.innerWidth - rect.width - pad);
+    }
+    if (top < pad) top = pad;
+    if (left < pad) left = pad;
+    el.style.top = `${top}px`;
+    el.style.left = `${left}px`;
+  }, [isOpen, anchor?.top, anchor?.left, type, amount, rate, indexPercent]);
+
+  if (!isOpen) return null;
+
+  const peso = (val: number) =>
+    `₱${Math.round(val).toLocaleString('en-PH', { maximumFractionDigits: 0 })}`;
 
   const isUp = indexPercent >= 100;
-  const diffAmount = amount - baselineAmount;
-  const changePercent = indexPercent - 100;
+  const isGood = invertSentiment ? !isUp : isUp;
+
+  const rows =
+    type === 'comparison'
+      ? [
+          {
+            label: 'Current',
+            sub: dateRangeCurrent || undefined,
+            value: peso(amount),
+            tone: undefined as 'up' | 'down' | undefined,
+          },
+          {
+            label: 'Baseline',
+            sub: dateRangeBaseline || undefined,
+            value: peso(baselineAmount),
+            tone: undefined as 'up' | 'down' | undefined,
+          },
+          {
+            label: 'Index',
+            value: `${indexPercent.toFixed(1)}%`,
+            tone: (isGood ? 'up' : 'down') as 'up' | 'down',
+          },
+        ]
+      : type === 'main_expense'
+        ? [
+            {
+              label: categoryName || metricLabel,
+              sub: dateRangeCurrent || undefined,
+              value: peso(amount),
+              tone: undefined as undefined,
+            },
+            { label: 'Sales', value: peso(sales), tone: undefined as undefined },
+            { label: 'Rate', value: `${rate.toFixed(1)}%`, tone: undefined as undefined },
+          ]
+        : [
+            {
+              label: metricLabel,
+              sub: dateRangeCurrent || categoryName || undefined,
+              value: peso(amount),
+              tone: undefined as undefined,
+            },
+            { label: 'Sales', value: peso(sales), tone: undefined as undefined },
+            { label: 'Rate', value: `${rate.toFixed(1)}%`, tone: undefined as undefined },
+          ];
+
+  const formulaLines =
+    type === 'comparison'
+      ? [
+          'Index = 100 + ((Current − Baseline) ÷ |Baseline| × 100)',
+          `= 100 + ((${peso(amount)} − ${peso(baselineAmount)}) ÷ ${peso(Math.abs(baselineAmount) || 1)} × 100)`,
+          `≈ ${indexPercent.toFixed(1)}%`,
+        ]
+      : [
+          `Rate = ${metricLabel || categoryName || 'Amount'} ÷ Sales × 100`,
+          `= ${peso(amount)} ÷ ${peso(sales)} × 100`,
+          `≈ ${rate.toFixed(1)}%`,
+        ];
+
+  const subtitle =
+    type === 'comparison'
+      ? metricLabel || 'Period comparison'
+      : '% of Sales';
 
   return (
-    <AnimatePresence>
-      <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center p-0 sm:p-4 bg-slate-900/60 backdrop-blur-sm">
-        <motion.div
-          initial={{ opacity: 0, y: 50, scale: 0.95 }}
-          animate={{ opacity: 1, y: 0, scale: 1 }}
-          exit={{ opacity: 0, y: 50, scale: 0.95 }}
-          transition={{ type: 'spring', damping: 25, stiffness: 300 }}
-          className="w-full max-w-lg bg-white dark:bg-slate-900 rounded-t-3xl sm:rounded-3xl shadow-2xl overflow-hidden border border-slate-200 dark:border-slate-800"
-        >
-          {/* Header */}
-          <div className="bg-gradient-to-r from-blue-700 via-indigo-700 to-purple-700 px-6 py-5 text-white flex items-center justify-between relative">
-            <div className="flex items-center space-x-3">
-              <div className="w-10 h-10 rounded-2xl bg-white/15 backdrop-blur-md flex items-center justify-center border border-white/20">
-                <Calculator className="w-5 h-5 text-amber-300" />
-              </div>
-              <div>
-                <span className="text-xs uppercase tracking-wider text-blue-200 font-medium">
-                  {branchName} • Context Breakdown
-                </span>
-                <h3 className="text-lg font-bold text-white leading-tight">
-                  {title}
-                </h3>
-              </div>
-            </div>
+    <ModalPortal>
+      <div
+        ref={cardRef}
+        data-compare-breakdown-popup
+        role="dialog"
+        aria-label="Computation breakdown"
+        className="fixed z-[90] w-[min(360px,calc(100vw-16px))] max-h-[min(480px,calc(100dvh-16px))] overflow-y-auto rounded-xl border border-indigo-200/60 bg-white p-4 shadow-xl shadow-slate-900/10"
+        style={{
+          top: anchor?.top ?? 80,
+          left: anchor?.left ?? 16,
+        }}
+      >
+        <div className="mb-3 border-b border-slate-100 pb-2.5">
+          <p className="text-sm font-bold tracking-wide text-indigo-600">
+            {branchName}
+          </p>
+          <p className="mt-0.5 text-xs leading-snug text-slate-500">
+            {subtitle}
+          </p>
+        </div>
 
-            <button
-              onClick={onClose}
-              className="p-2 rounded-full hover:bg-white/20 text-white transition-colors"
-            >
-              <X className="w-5 h-5" />
-            </button>
+        <div className="space-y-2.5">
+          {rows.map((line) => {
+            const valueColor =
+              line.tone === 'up'
+                ? 'text-emerald-600'
+                : line.tone === 'down'
+                  ? 'text-red-600'
+                  : 'text-slate-800';
+            return (
+              <div key={`${line.label}-${line.sub ?? ''}`} className="flex items-start justify-between gap-3">
+                <div className="min-w-0">
+                  <p className="text-xs font-semibold text-slate-700">{line.label}</p>
+                  {line.sub ? (
+                    <p className="text-[11px] leading-snug text-slate-400">{line.sub}</p>
+                  ) : null}
+                </div>
+                <p className={`shrink-0 text-xs font-bold tabular-nums ${valueColor}`}>{line.value}</p>
+              </div>
+            );
+          })}
+        </div>
+
+        <div className="mt-3.5 rounded-lg bg-slate-50 px-3 py-3 border border-slate-100">
+          <p className="text-[11px] font-bold uppercase tracking-wide text-slate-500 mb-2">
+            How % is computed
+          </p>
+          <div className="space-y-1 font-mono text-[11px] leading-5 text-slate-600 break-words">
+            {formulaLines.map((line, i) => (
+              <p
+                key={`f-${i}`}
+                className={
+                  i === 0
+                    ? 'font-semibold text-slate-700'
+                    : line.startsWith('≈')
+                      ? 'font-bold text-slate-800'
+                      : 'pl-2 text-slate-500'
+                }
+              >
+                {line}
+              </p>
+            ))}
           </div>
-
-          {/* Modal Content */}
-          <div className="p-6 space-y-5 text-slate-800 dark:text-slate-100 max-h-[75vh] overflow-y-auto">
-            {/* TYPE 1: Total Rate (% of Sales) */}
-            {type === 'total_rate' && (
-              <div className="space-y-4">
-                <div className="p-4 rounded-2xl bg-slate-50 dark:bg-slate-800/60 border border-slate-200/80 dark:border-slate-700/60 space-y-3">
-                  <div className="flex justify-between items-center text-sm">
-                    <span className="text-slate-500 dark:text-slate-400 font-medium">{metricLabel} Amount ({categoryName || 'Total'})</span>
-                    <span className="font-bold text-slate-900 dark:text-white text-base">{formatCurrency(amount)}</span>
-                  </div>
-                  <div className="flex justify-between items-center text-sm border-t border-slate-200 dark:border-slate-700 pt-2">
-                    <span className="text-slate-500 dark:text-slate-400 font-medium">Total Sales</span>
-                    <span className="font-bold text-slate-900 dark:text-white text-base">{formatCurrency(sales)}</span>
-                  </div>
-                  <div className="flex justify-between items-center text-sm border-t border-slate-200 dark:border-slate-700 pt-2 text-indigo-600 dark:text-indigo-400 font-semibold">
-                    <span>Calculated Ratio ({metricLabel} %)</span>
-                    <span className="text-xl font-extrabold">{rate.toFixed(1)}%</span>
-                  </div>
-                </div>
-
-                {/* Formula box */}
-                <div className="p-4 rounded-2xl bg-blue-50 dark:bg-blue-950/40 border border-blue-200 dark:border-blue-800/50 space-y-2">
-                  <div className="flex items-center space-x-2 text-blue-700 dark:text-blue-300 text-xs font-bold uppercase tracking-wide">
-                    <Info className="w-4 h-4" />
-                    <span>Calculation Formula</span>
-                  </div>
-                  <div className="font-mono text-xs p-3 rounded-xl bg-white dark:bg-slate-900 border border-blue-200 dark:border-blue-900 text-blue-900 dark:text-blue-200 font-medium">
-                    Rate = (Amount ÷ Sales) × 100
-                    <br />
-                    Rate = ({formatCurrency(amount)} ÷ {formatCurrency(sales)}) × 100 = <span className="font-bold text-indigo-600 dark:text-indigo-400">{rate.toFixed(1)}%</span>
-                  </div>
-                </div>
-              </div>
-            )}
-
-            {/* TYPE 2: Comparison Window Details */}
-            {type === 'comparison' && (
-              <div className="space-y-4">
-                {/* Index Card */}
-                <div className={`p-4 rounded-2xl border flex items-center justify-between ${
-                  isUp 
-                    ? 'bg-emerald-50 dark:bg-emerald-950/30 border-emerald-200 dark:border-emerald-800/60 text-emerald-900 dark:text-emerald-200'
-                    : 'bg-rose-50 dark:bg-rose-950/30 border-rose-200 dark:border-rose-800/60 text-rose-900 dark:text-rose-200'
-                }`}>
-                  <div>
-                    <span className="text-xs uppercase font-bold tracking-wide opacity-80">
-                      Comparative Index Performance
-                    </span>
-                    <div className="flex items-baseline space-x-2 mt-1">
-                      <span className="text-3xl font-black">{indexPercent.toFixed(1)}%</span>
-                      <span className="text-sm font-semibold">
-                        ({changePercent >= 0 ? '+' : ''}{changePercent.toFixed(1)}% vs Baseline)
-                      </span>
-                    </div>
-                  </div>
-                  <div className={`w-12 h-12 rounded-2xl flex items-center justify-center ${
-                    isUp ? 'bg-emerald-500/20 text-emerald-600 dark:text-emerald-400' : 'bg-rose-500/20 text-rose-600 dark:text-rose-400'
-                  }`}>
-                    {isUp ? <TrendingUp className="w-6 h-6" /> : <TrendingDown className="w-6 h-6" />}
-                  </div>
-                </div>
-
-                {/* Period Grid */}
-                <div className="grid grid-cols-2 gap-3">
-                  <div className="p-3.5 rounded-2xl bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-700/60 space-y-1">
-                    <div className="flex items-center space-x-1.5 text-xs text-slate-500 dark:text-slate-400 font-medium">
-                      <Calendar className="w-3.5 h-3.5" />
-                      <span>Current Window</span>
-                    </div>
-                    <div className="text-xs font-semibold text-slate-700 dark:text-slate-300">
-                      {dateRangeCurrent || 'Selected Date Range'}
-                    </div>
-                    <div className="text-base font-extrabold text-slate-900 dark:text-white mt-1">
-                      {formatCurrency(amount)}
-                    </div>
-                  </div>
-
-                  <div className="p-3.5 rounded-2xl bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-700/60 space-y-1">
-                    <div className="flex items-center space-x-1.5 text-xs text-slate-500 dark:text-slate-400 font-medium">
-                      <Calendar className="w-3.5 h-3.5" />
-                      <span>Baseline Window</span>
-                    </div>
-                    <div className="text-xs font-semibold text-slate-700 dark:text-slate-300">
-                      {dateRangeBaseline || 'Baseline Range'}
-                    </div>
-                    <div className="text-base font-extrabold text-slate-900 dark:text-white mt-1">
-                      {formatCurrency(baselineAmount)}
-                    </div>
-                  </div>
-                </div>
-
-                {/* Formula Breakdown */}
-                <div className="p-4 rounded-2xl bg-indigo-50 dark:bg-indigo-950/40 border border-indigo-200 dark:border-indigo-800/50 space-y-2">
-                  <div className="flex items-center space-x-2 text-indigo-700 dark:text-indigo-300 text-xs font-bold uppercase tracking-wide">
-                    <Info className="w-4 h-4" />
-                    <span>Index Calculation Formula</span>
-                  </div>
-                  <p className="text-xs text-slate-600 dark:text-slate-300 leading-relaxed">
-                    Index percentage represents current performance relative to baseline (100% = identical, &gt;100% = growth, &lt;100% = contraction).
-                  </p>
-                  <div className="font-mono text-xs p-3 rounded-xl bg-white dark:bg-slate-900 border border-indigo-200 dark:border-indigo-900 text-indigo-950 dark:text-indigo-200 font-medium">
-                    Index = (Current ÷ Baseline) × 100
-                    <br />
-                    Index = ({formatCurrency(amount)} ÷ {formatCurrency(baselineAmount)}) × 100 = <span className="font-bold text-indigo-600 dark:text-indigo-400">{indexPercent.toFixed(1)}%</span>
-                  </div>
-                </div>
-              </div>
-            )}
-
-            {/* TYPE 3: Main Expense Breakdown */}
-            {type === 'main_expense' && (
-              <div className="space-y-4">
-                <div className="p-4 rounded-2xl bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-700/60 space-y-3">
-                  <div className="flex justify-between items-center text-sm">
-                    <span className="text-slate-500 dark:text-slate-400 font-medium">Expense Category</span>
-                    <span className="font-bold text-slate-900 dark:text-white">{categoryName}</span>
-                  </div>
-                  <div className="flex justify-between items-center text-sm border-t border-slate-200 dark:border-slate-700 pt-2">
-                    <span className="text-slate-500 dark:text-slate-400 font-medium">Category Expense Amount</span>
-                    <span className="font-bold text-slate-900 dark:text-white text-base">{formatCurrency(amount)}</span>
-                  </div>
-                  <div className="flex justify-between items-center text-sm border-t border-slate-200 dark:border-slate-700 pt-2">
-                    <span className="text-slate-500 dark:text-slate-400 font-medium">Branch Total Sales</span>
-                    <span className="font-bold text-slate-900 dark:text-white text-base">{formatCurrency(sales)}</span>
-                  </div>
-                  <div className="flex justify-between items-center text-sm border-t border-slate-200 dark:border-slate-700 pt-2 text-amber-600 dark:text-amber-400 font-bold">
-                    <span>% of Total Sales</span>
-                    <span className="text-xl">{rate.toFixed(1)}%</span>
-                  </div>
-                </div>
-
-                <div className="p-4 rounded-2xl bg-amber-50 dark:bg-amber-950/40 border border-amber-200 dark:border-amber-800/50 space-y-2">
-                  <div className="flex items-center space-x-2 text-amber-700 dark:text-amber-300 text-xs font-bold uppercase tracking-wide">
-                    <Percent className="w-4 h-4" />
-                    <span>Expense Ratio Formula</span>
-                  </div>
-                  <div className="font-mono text-xs p-3 rounded-xl bg-white dark:bg-slate-900 border border-amber-200 dark:border-amber-900 text-amber-950 dark:text-amber-200 font-medium">
-                    Category % = (Category Amount ÷ Total Sales) × 100
-                    <br />
-                    Category % = ({formatCurrency(amount)} ÷ {formatCurrency(sales)}) × 100 = <span className="font-bold text-amber-600 dark:text-amber-400">{rate.toFixed(1)}%</span>
-                  </div>
-                </div>
-              </div>
-            )}
-          </div>
-
-          {/* Footer close button */}
-          <div className="p-4 bg-slate-50 dark:bg-slate-800/50 border-t border-slate-200 dark:border-slate-800 flex justify-end">
-            <button
-              onClick={onClose}
-              className="px-6 py-2.5 rounded-xl bg-slate-900 text-white dark:bg-white dark:text-slate-900 font-bold text-sm shadow-md hover:opacity-90 transition-opacity"
-            >
-              Done / Close
-            </button>
-          </div>
-        </motion.div>
+        </div>
       </div>
-    </AnimatePresence>
+    </ModalPortal>
   );
 };

@@ -1,4 +1,5 @@
 import express from "express";
+import fs from "fs";
 import path from "path";
 import { createServer as createViteServer } from "vite";
 import { GoogleGenAI } from "@google/genai";
@@ -6,6 +7,18 @@ import dotenv from "dotenv";
 import mysql from "mysql2/promise";
 
 dotenv.config();
+
+function resolveUploadsDir(): string | null {
+  const candidates = [
+    process.env.BRANCH_UPLOADS_DIR,
+    path.resolve(process.cwd(), "../restoAdmin/server/public/uploads"),
+    path.resolve(process.cwd(), "public/uploads"),
+  ].filter(Boolean) as string[];
+  for (const dir of candidates) {
+    if (fs.existsSync(dir)) return dir;
+  }
+  return null;
+}
 
 // ─── MySQL Connection (same DB as restoAdmin) ───
 const pool = mysql.createPool({
@@ -68,6 +81,14 @@ async function startServer() {
   const PORT = 3000;
   app.use(express.json());
 
+  const uploadsDir = resolveUploadsDir();
+  if (uploadsDir) {
+    app.use("/uploads", express.static(uploadsDir));
+    console.log(`🖼  Serving branch/menu uploads from ${uploadsDir}`);
+  } else {
+    console.warn("⚠️  No uploads directory found — branch logos will fall back to initials");
+  }
+
   let aiClient: GoogleGenAI | null = null;
   function getAI() {
     if (!aiClient) {
@@ -93,7 +114,7 @@ async function startServer() {
     try {
       const placeholders = EXCLUDED_BRANCHES.map(() => '?').join(',');
       const [rows] = await pool.execute(
-        `SELECT IDNo as id, BRANCH_CODE as code, BRANCH_NAME as name FROM branches WHERE ACTIVE = 1 AND BRANCH_NAME NOT IN (${placeholders}) ORDER BY BRANCH_NAME`,
+        `SELECT IDNo as id, BRANCH_CODE as code, BRANCH_NAME as name, BRANCH_LOGO as logo FROM branches WHERE ACTIVE = 1 AND BRANCH_NAME NOT IN (${placeholders}) ORDER BY BRANCH_NAME`,
         EXCLUDED_BRANCHES
       );
       res.json({ success: true, data: rows });
@@ -116,6 +137,7 @@ async function startServer() {
         SELECT
           b2.IDNo as branch_id,
           b2.BRANCH_NAME as branch_name,
+          b2.BRANCH_LOGO as branch_logo,
           COALESCE(SUM(b.AMOUNT_PAID), 0) as total_sales,
           COALESCE(SUM(b.REFUND), 0) as total_refund,
           COALESCE(SUM(b.AMOUNT_PAID) - SUM(COALESCE(b.REFUND, 0)), 0) as net_sales,
@@ -131,7 +153,7 @@ async function startServer() {
         salesQuery += ` AND b2.IDNo = ?`;
         salesParams.push(branchIdFilter);
       }
-      salesQuery += ` GROUP BY b2.IDNo, b2.BRANCH_NAME ORDER BY net_sales DESC`;
+      salesQuery += ` GROUP BY b2.IDNo, b2.BRANCH_NAME, b2.BRANCH_LOGO ORDER BY net_sales DESC`;
 
       const [branchSales] = await pool.execute(salesQuery, salesParams);
 
@@ -252,6 +274,7 @@ async function startServer() {
       const branchCardsData = (branchSales as any[]).map((b: any) => ({
         id: b.branch_id,
         name: b.branch_name,
+        logo: b.branch_logo || null,
         totalSales: Number(b.net_sales) || 0,
         reportSalesPos: Number(b.net_sales) || 0,
         totalExpenses: expenseByBranch[String(b.branch_id)] || 0,

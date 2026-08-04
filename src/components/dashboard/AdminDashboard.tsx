@@ -123,8 +123,14 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   const topLaborVal = Math.min(...activeBranches.map((b) => b.mainExpenses.labor.amount));
   const topOthersVal = Math.min(...activeBranches.map((b) => b.mainExpenses.others.amount));
 
-  // Modal Opener Helpers
+  // Modal Opener Helpers (restoAdmin-style anchored popover)
+  const anchorFromEvent = (e: React.MouseEvent<HTMLElement>) => {
+    const rect = e.currentTarget.getBoundingClientRect();
+    return { top: rect.bottom + 8, left: rect.left };
+  };
+
   const openRateModal = (
+    e: React.MouseEvent<HTMLElement>,
     branchName: string,
     branchId: string,
     metricLabel: string,
@@ -133,6 +139,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
     rate: number,
     categoryName?: string
   ) => {
+    e.stopPropagation();
     setModalState({
       isOpen: true,
       type: 'total_rate',
@@ -144,10 +151,12 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
       sales,
       rate,
       categoryName,
+      anchor: anchorFromEvent(e),
     });
   };
 
   const openComparisonModal = (
+    e: React.MouseEvent<HTMLElement>,
     branchName: string,
     branchId: string,
     metricTitle: string,
@@ -160,6 +169,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
       dateRangeBaseline: string;
     }
   ) => {
+    e.stopPropagation();
     setModalState({
       isOpen: true,
       type: 'comparison',
@@ -172,10 +182,12 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
       indexPercent: cellData.indexPercent,
       dateRangeCurrent: cellData.dateRangeCurrent,
       dateRangeBaseline: cellData.dateRangeBaseline,
+      anchor: anchorFromEvent(e),
     });
   };
 
   const openMainExpenseModal = (
+    e: React.MouseEvent<HTMLElement>,
     branchName: string,
     branchId: string,
     categoryLabel: string,
@@ -183,6 +195,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
     sales: number,
     ratio: number
   ) => {
+    e.stopPropagation();
     setModalState({
       isOpen: true,
       type: 'main_expense',
@@ -194,6 +207,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
       sales,
       rate: ratio,
       categoryName: categoryLabel,
+      anchor: anchorFromEvent(e),
     });
   };
 
@@ -341,8 +355,9 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                         
                         {/* Expense Rate Badge (Clickable Popup) */}
                         <button
-                          onClick={() =>
+                          onClick={(e) =>
                             openRateModal(
+                              e,
                               item.branch.name,
                               item.branch.id,
                               'Total Expenses',
@@ -394,8 +409,9 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
 
                         {/* Profit Rate Badge (Clickable Popup) */}
                         <button
-                          onClick={() =>
+                          onClick={(e) =>
                             openRateModal(
+                              e,
                               item.branch.name,
                               item.branch.id,
                               'Net Profit',
@@ -442,8 +458,9 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                   return (
                     <td
                       key={item.branch.id}
-                      onClick={() =>
+                      onClick={(e) =>
                         openComparisonModal(
+                          e,
                           item.branch.name,
                           item.branch.id,
                           'SALES',
@@ -486,8 +503,9 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                   return (
                     <td
                       key={item.branch.id}
-                      onClick={() =>
+                      onClick={(e) =>
                         openComparisonModal(
+                          e,
                           item.branch.name,
                           item.branch.id,
                           'SALES',
@@ -527,8 +545,9 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                   return (
                     <td
                       key={item.branch.id}
-                      onClick={() =>
+                      onClick={(e) =>
                         openComparisonModal(
+                          e,
                           item.branch.name,
                           item.branch.id,
                           'SALES',
@@ -581,8 +600,9 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                   return (
                     <td
                       key={item.branch.id}
-                      onClick={() =>
+                      onClick={(e) =>
                         openComparisonModal(
+                          e,
                           item.branch.name,
                           item.branch.id,
                           'EXPENSES',
@@ -629,8 +649,9 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                   return (
                     <td
                       key={item.branch.id}
-                      onClick={() =>
+                      onClick={(e) =>
                         openComparisonModal(
+                          e,
                           item.branch.name,
                           item.branch.id,
                           'EXPENSES',
@@ -670,8 +691,9 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                   return (
                     <td
                       key={item.branch.id}
-                      onClick={() =>
+                      onClick={(e) =>
                         openComparisonModal(
+                          e,
                           item.branch.name,
                           item.branch.id,
                           'EXPENSES',
@@ -723,8 +745,9 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                   return (
                     <td
                       key={item.branch.id}
-                      onClick={() =>
+                      onClick={(e) =>
                         openComparisonModal(
+                          e,
                           item.branch.name,
                           item.branch.id,
                           'PROFIT',
@@ -767,8 +790,9 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                   return (
                     <td
                       key={item.branch.id}
-                      onClick={() =>
+                      onClick={(e) =>
                         openComparisonModal(
+                          e,
                           item.branch.name,
                           item.branch.id,
                           'PROFIT',
@@ -808,8 +832,9 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                   return (
                     <td
                       key={item.branch.id}
-                      onClick={() =>
+                      onClick={(e) =>
                         openComparisonModal(
+                          e,
                           item.branch.name,
                           item.branch.id,
                           'PROFIT',
@@ -861,8 +886,9 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                   return (
                     <td
                       key={item.branch.id}
-                      onClick={() =>
+                      onClick={(e) =>
                         openMainExpenseModal(
+                          e,
                           item.branch.name,
                           item.branch.id,
                           COMPARE_METRIC_LABELS.mainExpenses.foodLiquor,
@@ -903,8 +929,9 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                   return (
                     <td
                       key={item.branch.id}
-                      onClick={() =>
+                      onClick={(e) =>
                         openMainExpenseModal(
+                          e,
                           item.branch.name,
                           item.branch.id,
                           COMPARE_METRIC_LABELS.mainExpenses.rent,
@@ -945,8 +972,9 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                   return (
                     <td
                       key={item.branch.id}
-                      onClick={() =>
+                      onClick={(e) =>
                         openMainExpenseModal(
+                          e,
                           item.branch.name,
                           item.branch.id,
                           COMPARE_METRIC_LABELS.mainExpenses.labor,
@@ -987,8 +1015,9 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                   return (
                     <td
                       key={item.branch.id}
-                      onClick={() =>
+                      onClick={(e) =>
                         openMainExpenseModal(
+                          e,
                           item.branch.name,
                           item.branch.id,
                           COMPARE_METRIC_LABELS.mainExpenses.others,
