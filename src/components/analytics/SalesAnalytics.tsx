@@ -443,19 +443,6 @@ export const SalesAnalytics: React.FC = () => {
           <h1 className="text-base sm:text-lg font-bold text-slate-900 dark:text-white truncate" title={pnlTitle}>
             {pnlTitle}
           </h1>
-          {selectedBranch === 'all' && (
-            <div className="hidden lg:flex items-center gap-1.5 flex-wrap min-w-0">
-              {branches.map((b, i) => (
-                <span
-                  key={b.branch.id}
-                  className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-xs font-semibold bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-200 border border-slate-200 dark:border-slate-700"
-                >
-                  <span className="w-2 h-2 rounded-full shrink-0" style={{ background: getBranchColor(i) }} />
-                  {b.branch.name}
-                </span>
-              ))}
-            </div>
-          )}
         </div>
         <div className="flex items-center gap-2 shrink-0">
           {/* Desktop / website — compact branch dropdown next to date */}
