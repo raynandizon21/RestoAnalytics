@@ -87,6 +87,26 @@ export function parseDateKey(key: string): Date {
   return new Date(`${key.slice(0, 10)}T12:00:00`);
 }
 
+/** Normalize MySQL DATE / Date / ISO string → YYYY-MM-DD (UTC parts for Date objects). */
+export function normalizeSaleDateKey(val: unknown): string {
+  if (val == null) return '';
+  if (typeof val === 'string') {
+    const m = val.trim().match(/^(\d{4}-\d{2}-\d{2})/);
+    if (m) return m[1];
+  }
+  if (val instanceof Date && !Number.isNaN(val.getTime())) {
+    return `${val.getUTCFullYear()}-${pad2(val.getUTCMonth() + 1)}-${pad2(val.getUTCDate())}`;
+  }
+  const s = String(val);
+  const m = s.match(/^(\d{4}-\d{2}-\d{2})/);
+  if (m) return m[1];
+  const d = new Date(s);
+  if (!Number.isNaN(d.getTime())) {
+    return `${d.getUTCFullYear()}-${pad2(d.getUTCMonth() + 1)}-${pad2(d.getUTCDate())}`;
+  }
+  return s.slice(0, 10);
+}
+
 export function todayKey(): string {
   return toDateKey(new Date());
 }
@@ -587,17 +607,18 @@ export async function fetchDailyTrend(
     });
   }
 
-  // Fill every calendar day in the month(s) — zeros where no sales
-  // Single-month view → full month (1 → last day), even if range is MTD
-  const sameMonth =
-    rangeStart.getFullYear() === rangeEnd.getFullYear() &&
-    rangeStart.getMonth() === rangeEnd.getMonth();
-  const fillStart = sameMonth
-    ? new Date(rangeStart.getFullYear(), rangeStart.getMonth(), 1)
-    : new Date(rangeStart.getFullYear(), rangeStart.getMonth(), rangeStart.getDate());
-  const fillEnd = sameMonth
-    ? new Date(rangeStart.getFullYear(), rangeStart.getMonth() + 1, 0)
-    : new Date(rangeEnd.getFullYear(), rangeEnd.getMonth(), rangeEnd.getDate());
+  // Fill every calendar day in the selected range (zeros where no sales).
+  // Current month is MTD (1 → today); past months stay full month via getMonthRange.
+  const fillStart = new Date(
+    rangeStart.getFullYear(),
+    rangeStart.getMonth(),
+    rangeStart.getDate(),
+  );
+  const fillEnd = new Date(
+    rangeEnd.getFullYear(),
+    rangeEnd.getMonth(),
+    rangeEnd.getDate(),
+  );
 
   const points: DailySalesPoint[] = [];
   for (let d = new Date(fillStart); d <= fillEnd; d.setDate(d.getDate() + 1)) {
@@ -737,14 +758,17 @@ export async function fetchDailyPerBranch(range?: DateRange): Promise<DailyBranc
   const { start_date, end_date } = range || getCurrentMonthRange();
   const data = await apiFetch<any>('/analytics/daily-per-branch', { start_date, end_date });
   if (!data?.data?.length) return [];
-  return data.data.map((r: any) => ({
-    branchId: String(r.branch_id),
-    branchName: r.branch_name,
-    date: String(r.sale_date).slice(0, 10),
-    dayName: r.day_name,
-    netSales: Number(r.net_sales) || 0,
-    orderCount: Number(r.order_count) || 0,
-  }));
+  return data.data.map((r: any) => {
+    const date = normalizeSaleDateKey(r.sale_date);
+    return {
+      branchId: String(r.branch_id),
+      branchName: r.branch_name,
+      date,
+      dayName: r.day_name,
+      netSales: Number(r.net_sales) || 0,
+      orderCount: Number(r.order_count) || 0,
+    };
+  });
 }
 
 // ─── MoM (current MTD vs same days last month) ───

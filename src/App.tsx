@@ -33,7 +33,7 @@ export default function App() {
         darkMode={darkMode}
         onToggleDarkMode={() => setDarkMode((v) => !v)}
       />
-      <main className="flex-1 min-h-0 overflow-y-auto overflow-x-hidden md:overflow-hidden overscroll-y-contain">
+      <main className="flex-1 min-h-0 overflow-y-auto overflow-x-hidden overscroll-y-contain [-webkit-overflow-scrolling:touch]">
         <SalesAnalytics />
       </main>
     </div>

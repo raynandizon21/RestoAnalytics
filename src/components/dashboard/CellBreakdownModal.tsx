@@ -1,4 +1,5 @@
 import React, { useEffect, useLayoutEffect, useRef } from 'react';
+import { X } from 'lucide-react';
 import { PopupModalState } from '../../types';
 import { ModalPortal } from '../layout/ModalPortal';
 
@@ -149,35 +150,45 @@ export const CellBreakdownModal: React.FC<Props> = ({ modalState, onClose }) => 
         data-compare-breakdown-popup
         role="dialog"
         aria-label="Computation breakdown"
-        className="fixed z-[90] w-[min(360px,calc(100vw-16px))] max-h-[min(480px,calc(100dvh-16px))] overflow-y-auto rounded-xl border border-indigo-200/60 bg-white p-4 shadow-xl shadow-slate-900/10"
+        className="fixed z-[90] w-[min(360px,calc(100vw-16px))] max-h-[min(480px,calc(100dvh-16px))] overflow-y-auto rounded-xl border border-indigo-200/60 dark:border-slate-700 bg-white dark:bg-slate-900 p-4 shadow-xl shadow-slate-900/10 dark:shadow-black/40"
         style={{
           top: anchor?.top ?? 80,
           left: anchor?.left ?? 16,
         }}
       >
-        <div className="mb-3 border-b border-slate-100 pb-2.5">
-          <p className="text-sm font-bold tracking-wide text-indigo-600">
-            {branchName}
-          </p>
-          <p className="mt-0.5 text-xs leading-snug text-slate-500">
-            {subtitle}
-          </p>
+        <div className="mb-3 border-b border-slate-100 dark:border-slate-800 pb-2.5 flex items-start justify-between gap-2">
+          <div className="min-w-0">
+            <p className="text-sm font-bold tracking-wide text-indigo-600 dark:text-indigo-400">
+              {branchName}
+            </p>
+            <p className="mt-0.5 text-xs leading-snug text-slate-500 dark:text-slate-400">
+              {subtitle}
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            className="shrink-0 p-1.5 rounded-full bg-slate-100 dark:bg-slate-800 text-slate-400 hover:text-slate-700 dark:hover:text-white transition"
+            aria-label="Close"
+          >
+            <X className="w-4 h-4" />
+          </button>
         </div>
 
         <div className="space-y-2.5">
           {rows.map((line) => {
             const valueColor =
               line.tone === 'up'
-                ? 'text-emerald-600'
+                ? 'text-emerald-600 dark:text-emerald-400'
                 : line.tone === 'down'
-                  ? 'text-red-600'
-                  : 'text-slate-800';
+                  ? 'text-red-600 dark:text-red-400'
+                  : 'text-slate-800 dark:text-slate-100';
             return (
               <div key={`${line.label}-${line.sub ?? ''}`} className="flex items-start justify-between gap-3">
                 <div className="min-w-0">
-                  <p className="text-xs font-semibold text-slate-700">{line.label}</p>
+                  <p className="text-xs font-semibold text-slate-700 dark:text-slate-200">{line.label}</p>
                   {line.sub ? (
-                    <p className="text-[11px] leading-snug text-slate-400">{line.sub}</p>
+                    <p className="text-[11px] leading-snug text-slate-400 dark:text-slate-500">{line.sub}</p>
                   ) : null}
                 </div>
                 <p className={`shrink-0 text-xs font-bold tabular-nums ${valueColor}`}>{line.value}</p>
@@ -186,20 +197,20 @@ export const CellBreakdownModal: React.FC<Props> = ({ modalState, onClose }) => 
           })}
         </div>
 
-        <div className="mt-3.5 rounded-lg bg-slate-50 px-3 py-3 border border-slate-100">
-          <p className="text-[11px] font-bold uppercase tracking-wide text-slate-500 mb-2">
+        <div className="mt-3.5 rounded-lg bg-slate-50 dark:bg-slate-800/60 px-3 py-3 border border-slate-100 dark:border-slate-700/80">
+          <p className="text-[11px] font-bold uppercase tracking-wide text-slate-500 dark:text-slate-400 mb-2">
             How % is computed
           </p>
-          <div className="space-y-1 font-mono text-[11px] leading-5 text-slate-600 break-words">
+          <div className="space-y-1 font-mono text-[11px] leading-5 text-slate-600 dark:text-slate-400 break-words">
             {formulaLines.map((line, i) => (
               <p
                 key={`f-${i}`}
                 className={
                   i === 0
-                    ? 'font-semibold text-slate-700'
+                    ? 'font-semibold text-slate-700 dark:text-slate-200'
                     : line.startsWith('≈')
-                      ? 'font-bold text-slate-800'
-                      : 'pl-2 text-slate-500'
+                      ? 'font-bold text-slate-800 dark:text-slate-100'
+                      : 'pl-2 text-slate-500 dark:text-slate-500'
                 }
               >
                 {line}

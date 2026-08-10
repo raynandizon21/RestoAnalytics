@@ -34,7 +34,7 @@ function shortName(name: string) {
     .replace(/^KumHo$/i, 'KumHo');
 }
 
-/** Mobile: compact ₱K/M · Desktop: full peso (no shortcut). */
+/** Compact ₱K/M on mobile; full fetched amount on desktop. */
 function MoneyText({
   n,
   className,
@@ -42,10 +42,15 @@ function MoneyText({
   n: number;
   className?: string;
 }) {
+  const full = formatFullPeso(n);
   return (
-    <span className={className} title={formatFullPeso(n)}>
-      <span className="md:hidden">{formatPeso(n)}</span>
-      <span className="hidden md:inline whitespace-nowrap">{formatFullPeso(n)}</span>
+    <span className={`${className ?? ''} whitespace-nowrap`} title={full}>
+      <span className="md:hidden [@media(orientation:landscape)_and_(max-height:720px)]:inline">
+        {formatPeso(n)}
+      </span>
+      <span className="hidden md:inline [@media(orientation:landscape)_and_(max-height:720px)]:hidden">
+        {full}
+      </span>
     </span>
   );
 }
@@ -53,7 +58,7 @@ function MoneyText({
 function BranchLogo({
   name,
   logo,
-  className = 'w-6 h-6 md:w-12 md:h-12',
+  className = 'w-6 h-6 md:w-10 md:h-10 landscape:w-7 landscape:h-7 md:landscape:w-8 md:landscape:h-8',
 }: {
   name: string;
   logo?: string | null;
@@ -141,11 +146,11 @@ function WindowCellView({
     <button
       type="button"
       onClick={onClick}
-      className="w-full flex flex-col items-center md:items-start gap-0.5 text-center md:text-left active:bg-slate-100 dark:active:bg-slate-800/80 rounded-md px-0.5 py-0.5 transition min-w-0"
+      className="w-full flex flex-col items-start gap-0.5 text-left active:bg-slate-100 dark:active:bg-slate-800/80 rounded-md px-0.5 py-0.5 transition min-w-0"
     >
       <MoneyText
         n={cell.baselineAmount}
-        className="text-[10px] md:text-sm font-semibold text-slate-800 dark:text-slate-200 tabular-nums max-w-full md:whitespace-nowrap"
+        className="text-[10px] md:text-xs lg:text-sm font-semibold text-slate-800 dark:text-slate-200 tabular-nums max-w-full"
       />
       {cell.sentiment === 'neutral' ? (
         <span className="text-[8px] md:text-[11px] font-medium text-slate-500">—</span>
@@ -173,6 +178,8 @@ export const BranchComparisonModal: React.FC<Props> = ({ open, onClose, initialR
   const fitWrapRef = useRef<HTMLDivElement>(null);
   const fitContentRef = useRef<HTMLDivElement>(null);
   const [fitScale, setFitScale] = useState(1);
+  /** True desktop only — phone landscape often has width ≥768 but short height. */
+  const [desktopFit, setDesktopFit] = useState(false);
 
   const [modalState, setModalState] = useState<PopupModalState>({
     isOpen: false,
@@ -224,7 +231,18 @@ export const BranchComparisonModal: React.FC<Props> = ({ open, onClose, initialR
     return () => document.removeEventListener('mousedown', onDoc);
   }, [monthPickerOpen]);
 
-  /** Scale board on very short mobile viewports only; always allow vertical scroll so Main Expenses rows stay reachable. */
+  useEffect(() => {
+    const mq = window.matchMedia('(min-width: 768px) and (min-height: 560px)');
+    const sync = () => setDesktopFit(mq.matches);
+    sync();
+    mq.addEventListener('change', sync);
+    return () => mq.removeEventListener('change', sync);
+  }, []);
+
+  /**
+   * Desktop: scale to fit width+height (no scroll).
+   * Mobile / phone landscape: width-fit only — always allow vertical scroll.
+   */
   useLayoutEffect(() => {
     if (!open || loading) return;
     const wrap = fitWrapRef.current;
@@ -232,31 +250,45 @@ export const BranchComparisonModal: React.FC<Props> = ({ open, onClose, initialR
     if (!wrap || !content) return;
 
     const fit = () => {
-      // Desktop & normal phones: full size + vertical scroll (all Main Expenses rows visible)
-      if (window.matchMedia('(min-width: 768px)').matches) {
+      content.style.zoom = '1';
+      content.style.transform = 'none';
+      content.style.width = '';
+      content.style.maxWidth = '';
+      void content.offsetHeight;
+
+      const sh = Math.max(content.scrollHeight, 1);
+      const sw = Math.max(content.scrollWidth, 1);
+      const roomH = wrap.clientHeight;
+      const roomW = wrap.clientWidth;
+      if (roomH <= 0 || roomW <= 0) {
+        content.style.zoom = '';
         setFitScale(1);
         return;
       }
-      content.style.transform = 'none';
-      const sh = Math.max(content.scrollHeight, 1);
-      const room = wrap.clientHeight;
-      // Only gentle shrink if content is slightly taller; never clip rows — parent still scrolls
-      if (room > 0 && sh > room * 1.35) {
-        const s = Math.max(0.82, Math.min(room / sh, 1));
-        setFitScale(Number.isFinite(s) ? s : 1);
-      } else {
-        setFitScale(1);
-      }
+
+      const isDesktop = window.matchMedia('(min-width: 768px) and (min-height: 560px)').matches;
+      const scaleW = sw > roomW ? roomW / sw : 1;
+      // Height-fit only on desktop so mobile/landscape can still scroll the full board.
+      const scaleH = isDesktop && sh > roomH ? roomH / sh : 1;
+      const minScale = isDesktop ? 0.52 : 0.78;
+      const s = Math.max(minScale, Math.min(scaleW, scaleH, 1));
+      const next = Number.isFinite(s) ? Number(s.toFixed(4)) : 1;
+      content.style.zoom = next < 0.999 ? String(next) : '';
+      setFitScale((prev) => (Math.abs(prev - next) < 0.004 ? prev : next));
     };
 
     fit();
-    const ro = new ResizeObserver(fit);
+    const ro = new ResizeObserver(() => {
+      requestAnimationFrame(fit);
+    });
     ro.observe(wrap);
     ro.observe(content);
     window.addEventListener('resize', fit);
+    window.addEventListener('orientationchange', fit);
     return () => {
       ro.disconnect();
       window.removeEventListener('resize', fit);
+      window.removeEventListener('orientationchange', fit);
     };
   }, [open, loading, data, range.start_date]);
 
@@ -280,11 +312,6 @@ export const BranchComparisonModal: React.FC<Props> = ({ open, onClose, initialR
     () => data.reduce((s, b) => s + b.totals.profitRate, 0) / (data.length || 1),
     [data],
   );
-
-  const subtitle = useMemo(() => {
-    if (data.length <= 2) return data.map((b) => shortName(b.branch.name)).join(' vs ') || '—';
-    return `${data.slice(0, 2).map((b) => shortName(b.branch.name)).join(' vs ')} +${data.length - 2}`;
-  }, [data]);
 
   const monthLabel = formatMonthChooserLabel(range.start_date, range.end_date);
 
@@ -388,104 +415,195 @@ export const BranchComparisonModal: React.FC<Props> = ({ open, onClose, initialR
 
   const colCount = Math.max(data.length, 1);
   const metricSticky =
-    'sticky left-0 z-10 bg-white dark:bg-slate-900 border-r border-slate-200 dark:border-slate-800 px-1 md:px-2 py-1 text-[9px] md:text-[11px] font-semibold leading-tight';
+    'sticky left-0 z-10 bg-white dark:bg-slate-900 border-r border-slate-200 dark:border-slate-800 px-1 md:px-2 py-1 text-[9px] md:text-[11px] font-semibold leading-tight text-right';
+
+  const mobileMonthLabel = monthLabel
+    .replace(/\s+\d{4}/, '')
+    .replace(/\s*\(MTD\)/i, '')
+    .replace(/\s*MTD/i, '')
+    .trim();
+
+  const boardControls = (
+    <div
+      className={`flex items-center shrink-0 ${desktopFit ? 'gap-1.5' : 'gap-1 justify-center w-full'}`}
+      ref={pickerRef}
+    >
+      <div className="relative min-w-0">
+        <button
+          type="button"
+          onClick={() => {
+            const d = new Date(`${range.start_date}T12:00:00`);
+            setPickerYear(d.getFullYear());
+            setMonthPickerOpen((o) => !o);
+          }}
+          className={`inline-flex items-center font-semibold text-slate-700 dark:text-slate-100 transition ${
+            desktopFit
+              ? 'justify-center gap-1.5 px-2.5 py-1.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-xs'
+              : 'justify-center gap-0.5 pl-1.5 pr-2 py-1 rounded-full border border-sky-400/40 bg-sky-500/15 text-[10px] leading-none active:scale-[0.98]'
+          }`}
+          title="Multi-Branch Board"
+          aria-label={`Multi-Branch Board, ${monthLabel}`}
+        >
+          <Calendar className={`shrink-0 ${desktopFit ? 'w-3.5 h-3.5 text-sky-500 dark:text-sky-400' : 'w-3 h-3 text-sky-400'}`} />
+          <span className="tabular-nums whitespace-nowrap">
+            {desktopFit ? monthLabel : mobileMonthLabel}
+          </span>
+        </button>
+
+        {monthPickerOpen && (
+          <div
+            className={`absolute top-full mt-1.5 z-50 w-[min(16rem,70vw)] rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 shadow-xl p-3 ${
+              desktopFit ? 'right-0' : 'left-0'
+            }`}
+          >
+            <div className="flex items-center justify-between mb-2">
+              <button type="button" onClick={() => setPickerYear((y) => y - 1)} className="p-1.5 rounded-md text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800" aria-label="Previous year">
+                <ChevronLeft className="w-4 h-4" />
+              </button>
+              <span className="text-sm font-bold text-slate-900 dark:text-white tabular-nums">{pickerYear}</span>
+              <button type="button" onClick={() => setPickerYear((y) => Math.min(maxYear, y + 1))} disabled={pickerYear >= maxYear} className="p-1.5 rounded-md text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800 disabled:opacity-30" aria-label="Next year">
+                <ChevronRight className="w-4 h-4" />
+              </button>
+            </div>
+            <div className="grid grid-cols-3 gap-1">
+              {MONTH_SHORT.map((m, i) => {
+                const start = new Date(`${range.start_date}T12:00:00`);
+                const selected = start.getFullYear() === pickerYear && start.getMonth() === i;
+                const disabled = isMonthDisabled(pickerYear, i);
+                return (
+                  <button
+                    key={m}
+                    type="button"
+                    disabled={disabled}
+                    onClick={() => pickMonth(pickerYear, i)}
+                    className={`py-2.5 rounded-lg text-xs font-bold ${
+                      selected
+                        ? 'bg-indigo-600 text-white'
+                        : disabled
+                          ? 'text-slate-300 dark:text-slate-600'
+                          : 'text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800'
+                    }`}
+                  >
+                    {m}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        )}
+      </div>
+
+      <button
+        type="button"
+        onClick={onClose}
+        className={`rounded-full text-slate-400 hover:text-slate-700 dark:hover:text-white shrink-0 transition ${
+          desktopFit
+            ? 'p-2 bg-slate-100 dark:bg-slate-800'
+            : 'p-1 bg-slate-800 border border-slate-600/80 active:scale-95'
+        }`}
+        aria-label="Close"
+      >
+        <X className={desktopFit ? 'w-4 h-4' : 'w-3.5 h-3.5'} />
+      </button>
+    </div>
+  );
 
   return (
     <ModalPortal>
       <>
         <div
-          className="fixed inset-0 z-[70] flex items-stretch md:items-center justify-center p-0 md:p-3 lg:p-5 bg-slate-950/50 dark:bg-slate-950/90 backdrop-blur-md"
+          className="fixed inset-0 z-[70] flex items-stretch justify-center p-0 bg-slate-950/50 dark:bg-slate-950/90"
           onClick={onClose}
         >
           <div
-            className="w-screen max-w-[100vw] h-[100dvh] md:h-[min(96dvh,1080px)] md:w-[min(99vw,1800px)] md:max-w-[1800px] flex flex-col bg-white dark:bg-slate-900 rounded-none md:rounded-2xl shadow-2xl border-0 md:border md:border-slate-200 dark:md:border-slate-700/80 overflow-hidden pt-[env(safe-area-inset-top)] pb-[env(safe-area-inset-bottom)]"
+            className="relative w-screen max-w-[100vw] h-[100dvh] max-h-[100dvh] flex flex-col bg-white dark:bg-slate-900 rounded-none shadow-none border-0 overflow-hidden pt-[env(safe-area-inset-top)] pb-[env(safe-area-inset-bottom)]"
             onClick={(e) => e.stopPropagation()}
           >
-            {/* Header */}
-            <div className="shrink-0 px-3 md:px-5 pt-3 md:pt-4 pb-2.5 border-b border-slate-200 dark:border-slate-800">
-              <div className="flex items-start justify-between gap-2 min-w-0">
-                <div className="min-w-0 flex-1">
-                  <div className="text-[9px] md:text-[10px] font-bold uppercase tracking-widest text-amber-500 dark:text-amber-400">
-                    Branch Comparison
-                  </div>
-                  <h2 className="text-base md:text-xl font-bold text-slate-900 dark:text-white tracking-tight mt-0.5 truncate">
-                    Multi-Branch Board
-                  </h2>
-                  <p className="text-[11px] md:text-sm text-slate-500 font-medium mt-0.5 truncate">
-                    {subtitle}
-                  </p>
-                </div>
-
-                <div className="flex items-start gap-1.5 shrink-0">
-                  <div className="relative" ref={pickerRef}>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        const d = new Date(`${range.start_date}T12:00:00`);
-                        setPickerYear(d.getFullYear());
-                        setMonthPickerOpen((o) => !o);
-                      }}
-                      className="inline-flex items-center justify-center gap-1 px-2.5 py-1.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-[11px] md:text-xs font-semibold text-slate-700 dark:text-slate-200"
-                    >
-                      <Calendar className="w-3.5 h-3.5 text-sky-500 dark:text-sky-400 shrink-0" />
-                      <span className="tabular-nums whitespace-nowrap">{monthLabel}</span>
-                    </button>
-
-                    {monthPickerOpen && (
-                      <div className="absolute right-0 top-full mt-1.5 z-50 w-[min(16rem,70vw)] rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 shadow-xl p-3">
-                        <div className="flex items-center justify-between mb-2">
-                          <button type="button" onClick={() => setPickerYear((y) => y - 1)} className="p-1.5 rounded-md text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800" aria-label="Previous year">
-                            <ChevronLeft className="w-4 h-4" />
-                          </button>
-                          <span className="text-sm font-bold text-slate-900 dark:text-white tabular-nums">{pickerYear}</span>
-                          <button type="button" onClick={() => setPickerYear((y) => Math.min(maxYear, y + 1))} disabled={pickerYear >= maxYear} className="p-1.5 rounded-md text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800 disabled:opacity-30" aria-label="Next year">
-                            <ChevronRight className="w-4 h-4" />
-                          </button>
-                        </div>
-                        <div className="grid grid-cols-3 gap-1">
-                          {MONTH_SHORT.map((m, i) => {
-                            const start = new Date(`${range.start_date}T12:00:00`);
-                            const selected = start.getFullYear() === pickerYear && start.getMonth() === i;
-                            const disabled = isMonthDisabled(pickerYear, i);
-                            return (
-                              <button
-                                key={m}
-                                type="button"
-                                disabled={disabled}
-                                onClick={() => pickMonth(pickerYear, i)}
-                                className={`py-2.5 rounded-lg text-xs font-bold ${
-                                  selected
-                                    ? 'bg-indigo-600 text-white'
-                                    : disabled
-                                      ? 'text-slate-300 dark:text-slate-600'
-                                      : 'text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800'
-                                }`}
-                              >
-                                {m}
-                              </button>
-                            );
-                          })}
-                        </div>
-                      </div>
-                    )}
-                  </div>
-
-                  <button
-                    type="button"
-                    onClick={onClose}
-                    className="p-2 rounded-full bg-slate-100 dark:bg-slate-800 text-slate-400 hover:text-slate-700 dark:hover:text-white shrink-0"
-                    aria-label="Close"
-                  >
-                    <X className="w-4 h-4" />
-                  </button>
+            {/* Desktop: top-right bar. Mobile: date + X as matching overlays. */}
+            {desktopFit ? (
+              <div className="shrink-0 px-2 sm:px-3 md:px-4 py-1.5 md:py-2 border-b border-slate-200 dark:border-slate-800">
+                <div className="flex items-center justify-end gap-1.5 min-w-0">
+                  {boardControls}
                 </div>
               </div>
-            </div>
+            ) : (
+              <>
+                <div
+                  ref={pickerRef}
+                  className="absolute top-[max(0.5rem,env(safe-area-inset-top))] left-2 z-[80]"
+                >
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const d = new Date(`${range.start_date}T12:00:00`);
+                      setPickerYear(d.getFullYear());
+                      setMonthPickerOpen((o) => !o);
+                    }}
+                    className="inline-flex items-center gap-1 px-2.5 py-2 rounded-full bg-slate-900/90 border border-slate-700 text-slate-300 shadow-lg active:scale-95"
+                    title="Multi-Branch Board"
+                    aria-label={`Multi-Branch Board, ${monthLabel}`}
+                    aria-expanded={monthPickerOpen}
+                  >
+                    <Calendar className="w-3.5 h-3.5 text-sky-400 shrink-0" />
+                    <span className="text-[11px] font-semibold tabular-nums text-slate-200">{mobileMonthLabel}</span>
+                  </button>
+                  {monthPickerOpen && (
+                    <div className="absolute left-0 top-full mt-1.5 z-50 w-[min(16rem,70vw)] rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 shadow-xl p-3">
+                      <div className="flex items-center justify-between mb-2">
+                        <button type="button" onClick={() => setPickerYear((y) => y - 1)} className="p-1.5 rounded-md text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800" aria-label="Previous year">
+                          <ChevronLeft className="w-4 h-4" />
+                        </button>
+                        <span className="text-sm font-bold text-slate-900 dark:text-white tabular-nums">{pickerYear}</span>
+                        <button type="button" onClick={() => setPickerYear((y) => Math.min(maxYear, y + 1))} disabled={pickerYear >= maxYear} className="p-1.5 rounded-md text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800 disabled:opacity-30" aria-label="Next year">
+                          <ChevronRight className="w-4 h-4" />
+                        </button>
+                      </div>
+                      <div className="grid grid-cols-3 gap-1">
+                        {MONTH_SHORT.map((m, i) => {
+                          const start = new Date(`${range.start_date}T12:00:00`);
+                          const selected = start.getFullYear() === pickerYear && start.getMonth() === i;
+                          const disabled = isMonthDisabled(pickerYear, i);
+                          return (
+                            <button
+                              key={m}
+                              type="button"
+                              disabled={disabled}
+                              onClick={() => pickMonth(pickerYear, i)}
+                              className={`py-2.5 rounded-lg text-xs font-bold ${
+                                selected
+                                  ? 'bg-indigo-600 text-white'
+                                  : disabled
+                                    ? 'text-slate-300 dark:text-slate-600'
+                                    : 'text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800'
+                              }`}
+                            >
+                              {m}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  )}
+                </div>
+                <button
+                  type="button"
+                  onClick={onClose}
+                  className="absolute top-[max(0.5rem,env(safe-area-inset-top))] right-2 z-[80] p-2 rounded-full bg-slate-900/90 border border-slate-700 text-slate-300 shadow-lg active:scale-95"
+                  aria-label="Close"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </>
+            )}
 
-            {/* Table — scale-to-fit so desktop has no side/down scroll */}
+            {/* Table — desktop: scale-to-fit + no scroll; mobile/landscape: width-fit + vertical scroll */}
             <div
               ref={fitWrapRef}
-              className="flex-1 min-h-0 overflow-y-auto overflow-x-hidden overscroll-contain [-webkit-overflow-scrolling:touch]"
+              className={`flex-1 min-h-0 overscroll-contain [-webkit-overflow-scrolling:touch] ${
+                desktopFit
+                  ? 'overflow-hidden flex items-center justify-center'
+                  : 'overflow-y-auto overflow-x-auto'
+              }`}
             >
               {loading ? (
                 <div className="flex items-center justify-center h-full py-24 text-indigo-400 gap-2">
@@ -499,31 +617,36 @@ export const BranchComparisonModal: React.FC<Props> = ({ open, onClose, initialR
               ) : (
                 <div
                   ref={fitContentRef}
-                  className="origin-top-left w-full"
-                  style={fitScale < 0.999 ? { transform: `scale(${fitScale})` } : undefined}
+                  className="origin-center w-full max-w-full"
+                  style={
+                    fitScale < 0.999
+                      ? ({ zoom: fitScale } as React.CSSProperties)
+                      : undefined
+                  }
                 >
-                <table className="w-full text-left border-collapse table-fixed">
+                <table className="w-full table-fixed border-collapse">
                   <colgroup>
-                    <col className="w-[18%] md:w-[16%]" />
+                    <col className="w-[22%] sm:w-[20%] md:w-[18%]" />
                     {data.map((item) => (
                       <col key={item.branch.id} />
                     ))}
                   </colgroup>
                   <thead className="bg-white dark:bg-slate-900">
                     <tr className="border-b border-slate-200 dark:border-slate-800">
-                      <th className="sticky top-0 left-0 z-40 bg-white dark:bg-slate-900 border-r border-slate-200 dark:border-slate-800 px-1 md:px-3 py-2 md:py-3 text-[8px] md:text-xs font-bold uppercase tracking-wide text-indigo-600 dark:text-indigo-300 shadow-[0_1px_0_0_rgba(148,163,184,0.25)]">
-                        Comparison Metric
+                      <th className="sticky top-0 left-0 z-40 bg-white dark:bg-slate-900 border-r border-slate-200 dark:border-slate-800 px-1 md:px-2 py-2 md:py-3 text-[9px] md:text-xs font-bold tracking-wide text-indigo-600 dark:text-indigo-300 text-right shadow-[0_1px_0_0_rgba(148,163,184,0.25)] align-middle">
+                        <span className="block leading-tight">
+                          업장별 비교
+                        </span>
                       </th>
                       {data.map((item) => (
                         <th
                           key={item.branch.id}
-                          className="sticky top-0 z-30 bg-white dark:bg-slate-900 px-0.5 md:px-3 py-1.5 md:py-3 text-center md:text-left border-l border-slate-200/80 dark:border-slate-800/80 shadow-[0_1px_0_0_rgba(148,163,184,0.25)]"
+                          className="sticky top-0 z-30 bg-white dark:bg-slate-900 px-0.5 md:px-3 py-1.5 md:py-3 text-left border-l border-slate-200/80 dark:border-slate-800/80 shadow-[0_1px_0_0_rgba(148,163,184,0.25)]"
                         >
-                          {/* Mobile: logo above name · Desktop: logo left + name right */}
-                          <div className="flex flex-col md:flex-row items-center md:items-center justify-center md:justify-start gap-0.5 md:gap-2.5 min-w-0">
+                          <div className="flex flex-col md:flex-row items-center justify-center md:justify-start gap-0.5 md:gap-2 min-w-0">
                             <BranchLogo name={item.branch.name} logo={item.branch.logo} />
                             <span
-                              className="text-[8px] md:text-sm lg:text-base font-bold text-slate-900 dark:text-white leading-tight line-clamp-2 md:line-clamp-2 px-0.5 min-w-0 md:text-left"
+                              className="text-[8px] md:text-sm lg:text-base font-bold text-slate-900 dark:text-white leading-tight line-clamp-2 px-0.5 min-w-0 text-center md:text-left"
                               title={item.branch.name}
                             >
                               <span className="md:hidden">{shortName(item.branch.name)}</span>
@@ -540,10 +663,10 @@ export const BranchComparisonModal: React.FC<Props> = ({ open, onClose, initialR
                       <td className={`${metricSticky} text-slate-600 dark:text-slate-300`}>{COMPARE_METRIC_LABELS.totalSales}</td>
                       {data.map((item) => (
                         <td key={item.branch.id} className="px-0.5 md:px-3 py-1.5 md:py-2 border-l border-slate-200/60 dark:border-slate-800/60 align-top">
-                          <div className="flex flex-col items-center md:items-start gap-0.5 min-w-0">
+                          <div className="flex flex-col items-start gap-0.5 min-w-0">
                             <MoneyText
                               n={item.totals.sales}
-                              className="text-[10px] md:text-sm font-bold text-sky-600 dark:text-sky-400 tabular-nums max-w-full md:whitespace-nowrap"
+                              className="text-[10px] md:text-xs lg:text-sm font-bold text-sky-600 dark:text-sky-400 tabular-nums max-w-full"
                             />
                           </div>
                         </td>
@@ -555,10 +678,10 @@ export const BranchComparisonModal: React.FC<Props> = ({ open, onClose, initialR
                       {data.map((item) => {
                         return (
                           <td key={item.branch.id} className="px-0.5 md:px-3 py-1.5 md:py-2 border-l border-slate-200/60 dark:border-slate-800/60 align-top">
-                            <div className="flex flex-col items-center md:items-start gap-0.5 min-w-0">
+                            <div className="flex flex-col items-start gap-0.5 min-w-0">
                               <MoneyText
                                 n={item.totals.expenses}
-                                className="text-[10px] md:text-sm font-bold text-orange-500 dark:text-orange-400 tabular-nums max-w-full md:whitespace-nowrap"
+                                className="text-[10px] md:text-xs lg:text-sm font-bold text-orange-500 dark:text-orange-400 tabular-nums max-w-full"
                               />
                               <PeerPctBadge
                                 pct={item.totals.expenseRate}
@@ -578,10 +701,10 @@ export const BranchComparisonModal: React.FC<Props> = ({ open, onClose, initialR
                       {data.map((item) => {
                         return (
                           <td key={item.branch.id} className="px-0.5 md:px-3 py-1.5 md:py-2 border-l border-slate-200/60 dark:border-slate-800/60 align-top">
-                            <div className="flex flex-col items-center md:items-start gap-0.5 min-w-0">
+                            <div className="flex flex-col items-start gap-0.5 min-w-0">
                               <MoneyText
                                 n={item.totals.netProfit}
-                                className={`text-[10px] md:text-sm font-bold tabular-nums max-w-full md:whitespace-nowrap ${item.totals.netProfit >= 0 ? 'text-emerald-600 dark:text-emerald-400' : 'text-red-600 dark:text-red-400'}`}
+                                className={`text-[10px] md:text-xs lg:text-sm font-bold tabular-nums max-w-full ${item.totals.netProfit >= 0 ? 'text-emerald-600 dark:text-emerald-400' : 'text-red-600 dark:text-red-400'}`}
                               />
                               <PeerPctBadge
                                 pct={item.totals.profitRate}
@@ -698,11 +821,11 @@ export const BranchComparisonModal: React.FC<Props> = ({ open, onClose, initialR
                                 onClick={(e) =>
                                   openMainExpense(e, item.branch.name, item.branch.id, label, cat.amount, item.totals.sales, cat.ratioOfSales)
                                 }
-                                className="flex flex-col items-center md:items-start gap-0.5 md:gap-1 text-center md:text-left w-full min-w-0 active:bg-slate-100 dark:active:bg-slate-800/60 rounded-md"
+                                className="flex flex-col items-start gap-0.5 text-left w-full min-w-0 active:bg-slate-100 dark:active:bg-slate-800/60 rounded-md"
                               >
                                 <MoneyText
                                   n={cat.amount}
-                                  className="text-[11px] md:text-base font-bold text-slate-900 dark:text-white tabular-nums max-w-full md:whitespace-nowrap"
+                                  className="text-[11px] md:text-sm font-bold text-slate-900 dark:text-white tabular-nums max-w-full"
                                 />
                                 <span className="text-[9px] md:text-sm text-sky-600 dark:text-sky-400 font-semibold tabular-nums">
                                   ({cat.ratioOfSales.toFixed(1)}%)

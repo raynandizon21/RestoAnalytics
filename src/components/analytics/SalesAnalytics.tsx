@@ -10,7 +10,7 @@ import {
   fetchDailyTrend, fetchBranchComparison, fetchTopSelling,
   fetchDailyPerBranch, fetchMenuDaily, fetchPeriodCompare, formatFullPeso, formatPeso, formatCompact, getBranchColor, sortBranchesByPreferredOrder,
   getCurrentMonthRange, getMonthRange, getYearRange, shiftViewRange,
-  formatRangeLabel, daysInRange, aggregateTrendByMonth, parseDateKey, todayKey,
+  formatRangeLabel, daysInRange, aggregateTrendByMonth, parseDateKey, todayKey, toDateKey,
   type DailySalesPoint, type TopSellingItem, type DailyBranchSales, type MenuDailyPoint, type PeriodCompare, type ViewPeriod, type DateRange,
 } from '../../services/analyticsService';
 import { BranchComparisonData } from '../../types';
@@ -20,9 +20,8 @@ import { BranchComparisonModal } from './BranchComparisonModal';
 const nowInit = new Date();
 const MONTH_SHORT = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'] as const;
 
-const DAY_ORDER = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'] as const;
-const DAY_SHORT = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'] as const;
-const DAY_LETTER = ['M', 'T', 'W', 'T', 'F', 'S', 'S'] as const;
+const DAY_ORDER = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'] as const;
+const DAY_LETTER = ['S', 'M', 'T', 'W', 'THU', 'F', 'S'] as const;
 
 /** Dense day labels on one line — compact so 1–31 all fit. */
 function DayAxisTick({
@@ -69,10 +68,16 @@ function shortBranchLabel(name: string) {
 }
 
 function dayNameFromDate(dateStr: string, fallback?: string): string {
+  // Prefer calendar date → weekday (avoids MySQL day_name / timezone mismatches).
+  const key = dateStr.slice(0, 10);
+  if (/^\d{4}-\d{2}-\d{2}$/.test(key)) {
+    const d = parseDateKey(key);
+    if (!Number.isNaN(d.getTime())) {
+      return DAY_ORDER[d.getDay()]; // JS Sun=0 matches Sunday-first DAY_ORDER
+    }
+  }
   if (fallback && (DAY_ORDER as readonly string[]).includes(fallback)) return fallback;
-  const d = new Date(dateStr.includes('T') ? dateStr : `${dateStr}T12:00:00`);
-  if (Number.isNaN(d.getTime())) return fallback || '';
-  return DAY_ORDER[(d.getDay() + 6) % 7]; // JS Sun=0 → Mon-first index
+  return fallback || '';
 }
 
 export const SalesAnalytics: React.FC = () => {
@@ -93,8 +98,10 @@ export const SalesAnalytics: React.FC = () => {
     totalSales: number;
     dayCount: number;
     branchDailyAvg: number;
-    strongDayName?: string;
-    strongAvg?: number;
+    prevDaySales: number;
+    delta: number;
+    saleDate?: string;
+    prevSaleDate?: string;
     isWeak: boolean;
   } | null>(null);
   const [dayTopItems, setDayTopItems] = useState<TopSellingItem[]>([]);
@@ -183,8 +190,32 @@ export const SalesAnalytics: React.FC = () => {
     return () => { document.body.style.overflow = prev; };
   }, [branchCompareOpen]);
 
+  // Deep link from Telegram / bookmarks: /?view=branch-comparison
   useEffect(() => {
-    const mq = window.matchMedia('(min-width: 768px)');
+    try {
+      const params = new URLSearchParams(window.location.search);
+      const view = String(params.get('view') || '').trim().toLowerCase();
+      const hash = String(window.location.hash || '').replace(/^#/, '').toLowerCase();
+      const openCompare =
+        view === 'branch-comparison' ||
+        view === 'compare' ||
+        hash === 'branch-comparison' ||
+        hash === 'compare';
+      if (!openCompare) return;
+
+      setBranchCompareOpen(true);
+      params.delete('view');
+      const qs = params.toString();
+      const nextUrl = `${window.location.pathname}${qs ? `?${qs}` : ''}`;
+      window.history.replaceState({}, '', nextUrl);
+    } catch {
+      /* ignore */
+    }
+  }, []);
+
+  useEffect(() => {
+    // Phone landscape often has width ≥768px but short height — keep mobile chrome (floating branch picker).
+    const mq = window.matchMedia('(min-width: 768px) and (min-height: 560px)');
     const sync = () => setIsDesktop(mq.matches);
     sync();
     mq.addEventListener('change', sync);
@@ -271,48 +302,48 @@ export const SalesAnalytics: React.FC = () => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedBranch]);
 
-  const openDayPopup = async (branchId: string, branchName: string, dayName: string, avgSales: number) => {
-    if (avgSales <= 0) return;
-    const branchDays = dailyPerBranch.filter(d => {
-      if (d.branchId !== branchId) return false;
-      const name = dayNameFromDate(d.date, d.dayName);
-      return name === dayName;
-    });
-    const totalSales = branchDays.reduce((s, d) => s + d.netSales, 0);
-    const dayCount = branchDays.length || 1;
+  /** Day detail: exact date vs calendar day before (no averages). */
+  const openDayPopup = async (branchId: string, branchName: string, saleDate: string, daySales: number) => {
+    if (!saleDate || daySales <= 0) return;
 
-    const allBranchDays = dailyPerBranch.filter(d => d.branchId === branchId);
-    const branchDailyAvg = allBranchDays.length
-      ? allBranchDays.reduce((s, d) => s + d.netSales, 0) / allBranchDays.length
-      : 0;
+    const dayName = dayNameFromDate(saleDate);
+    const branchDays = dailyPerBranch
+      .filter(d => d.branchId === branchId)
+      .sort((a, c) => a.date.localeCompare(c.date));
+    const byDate = new Map(branchDays.map(d => [d.date.slice(0, 10), d]));
+    const hit = byDate.get(saleDate);
+    if (!hit) return;
 
-    const dowTotals: Record<string, { total: number; count: number }> = {};
-    allBranchDays.forEach(d => {
-      const name = dayNameFromDate(d.date, d.dayName);
-      if (!name) return;
-      if (!dowTotals[name]) dowTotals[name] = { total: 0, count: 0 };
-      dowTotals[name].total += d.netSales;
-      dowTotals[name].count += 1;
-    });
-    const dowAvgs = DAY_ORDER
-      .map(name => ({
-        name,
-        avg: dowTotals[name] ? dowTotals[name].total / dowTotals[name].count : 0,
-      }))
-      .filter(d => d.avg > 0);
-    const strong = [...dowAvgs].sort((a, c) => c.avg - a.avg)[0];
-    const isWeak = branchDailyAvg > 0 && avgSales < branchDailyAvg * 0.85;
+    const prevD = parseDateKey(saleDate);
+    prevD.setDate(prevD.getDate() - 1);
+    const prevSaleDate = toDateKey(prevD);
+    const prevHit = byDate.get(prevSaleDate);
+    const prevDaySales = prevHit?.netSales ?? 0;
+    const currentSales = hit.netSales;
+    const delta = currentSales - prevDaySales;
+    const isWeak = prevDaySales > 0 && currentSales < prevDaySales;
 
     setDayPopup({
-      branchId, branchName, dayName, avgSales, totalSales, dayCount,
-      branchDailyAvg, isWeak,
-      strongDayName: strong?.name,
-      strongAvg: strong?.avg,
+      branchId,
+      branchName,
+      dayName,
+      avgSales: currentSales,
+      totalSales: currentSales,
+      dayCount: 1,
+      branchDailyAvg: prevDaySales,
+      prevDaySales,
+      delta,
+      saleDate,
+      prevSaleDate: prevHit ? prevSaleDate : undefined,
+      isWeak,
     });
     setDayLoading(true);
     setDayTopItems([]);
     try {
-      setDayTopItems(await fetchTopSelling(5, branchId, dayName, dateRange));
+      setDayTopItems(await fetchTopSelling(5, branchId, undefined, {
+        start_date: saleDate,
+        end_date: saleDate,
+      }));
     } finally {
       setDayLoading(false);
     }
@@ -389,41 +420,49 @@ export const SalesAnalytics: React.FC = () => {
     branchDailyMap.set(d.branchId, arr);
   });
 
-  const branchWeakDays = branches.map(b => {
-    const days = branchDailyMap.get(b.branch.id) || [];
-    if (!days.length) return null;
-    const avg = days.reduce((s, d) => s + d.netSales, 0) / days.length;
-    const dayTotals: Record<string, { total: number; count: number }> = {};
-    days.forEach(d => {
-      const name = dayNameFromDate(d.date, d.dayName);
-      if (!name) return;
-      if (!dayTotals[name]) dayTotals[name] = { total: 0, count: 0 };
-      dayTotals[name].total += d.netSales;
-      dayTotals[name].count += 1;
-    });
-    const dayAvgs = DAY_ORDER.map(name => ({
+  /** This week (Sun→Sat): actual dates + actual sales. Slow/Best = weakest/strongest day so far. */
+  const weekFocusDate =
+    todayKey() >= activeRange.start_date && todayKey() <= activeRange.end_date
+      ? todayKey()
+      : activeRange.end_date;
+  const weekStart = (() => {
+    const d = parseDateKey(weekFocusDate);
+    d.setDate(d.getDate() - d.getDay()); // back to Sunday
+    return d;
+  })();
+  const weekColumns = DAY_ORDER.map((name, i) => {
+    const d = new Date(weekStart);
+    d.setDate(weekStart.getDate() + i);
+    const date = toDateKey(d);
+    return {
       name,
-      avg: dayTotals[name] ? dayTotals[name].total / dayTotals[name].count : 0,
+      letter: DAY_LETTER[i],
+      date,
+      dayNum: d.getDate(),
+      isToday: date === todayKey(),
+      isFuture: date > todayKey(),
+    };
+  });
+
+  const thisWeekRows = branches.map(b => {
+    const days = branchDailyMap.get(b.branch.id) || [];
+    const byDate = new Map(days.map(d => [d.date.slice(0, 10), d.netSales]));
+    const cells = weekColumns.map(col => ({
+      name: col.name,
+      date: col.date,
+      sales: col.isFuture ? 0 : (byDate.get(col.date) ?? 0),
+      isFuture: col.isFuture,
+      isToday: col.isToday,
     }));
-    const withSales = dayAvgs.filter(d => d.avg > 0);
-    const byAvg = [...withSales].sort((a, c) => a.avg - c.avg);
+    const withSales = cells.filter(c => c.sales > 0);
+    const byAmt = [...withSales].sort((a, c) => a.sales - c.sales);
     return {
       branch: b,
-      avgDaily: avg,
-      weakestDayOfWeek: byAvg[0],
-      strongestDayOfWeek: byAvg[byAvg.length - 1],
-      dayAvgs,
+      cells,
+      slowDate: byAmt[0]?.date ?? null,
+      bestDate: byAmt.length ? byAmt[byAmt.length - 1]?.date ?? null : null,
     };
-  }).filter(Boolean) as Array<{
-    branch: BranchComparisonData;
-    avgDaily: number;
-    weakestDayOfWeek: { name: string; avg: number };
-    strongestDayOfWeek: { name: string; avg: number };
-    dayAvgs: Array<{ name: string; avg: number }>;
-  }>;
-
-  // Always show every branch (same as Sales by Branch); highlight via selectedBranch.
-  const weekdayRows = branchWeakDays;
+  });
 
   const branchLabel = selectedBranch === 'all'
     ? 'All Branches'
@@ -434,7 +473,7 @@ export const SalesAnalytics: React.FC = () => {
     : `${shortBranchLabel(branchLabel)} P&L`;
 
   return (
-    <div className={`w-full md:h-full md:min-h-0 flex flex-col md:grid md:grid-rows-[auto_auto_minmax(160px,1fr)_minmax(200px,1.1fr)] gap-2.5 md:gap-2 px-3 sm:px-4 py-3 md:py-2 font-sans overflow-x-hidden md:overflow-hidden ${
+    <div className={`w-full md:min-h-full flex flex-col md:grid md:grid-rows-[auto_auto_auto_auto] gap-2.5 md:gap-2 px-3 sm:px-4 py-3 md:py-2 font-sans overflow-x-hidden ${
       isDesktop ? 'pb-2' : 'pb-[calc(4.25rem+env(safe-area-inset-bottom))]'
     }`}>
       {/* Toolbar */}
@@ -445,8 +484,8 @@ export const SalesAnalytics: React.FC = () => {
           </h1>
         </div>
         <div className="flex items-center gap-2 shrink-0">
-          {/* Desktop / website — compact branch dropdown next to date */}
-          <div className="relative hidden md:block" ref={isDesktop ? branchMenuRef : undefined}>
+          {/* Desktop / website — compact branch dropdown next to date (hidden on phone landscape) */}
+          <div className={`relative ${isDesktop ? 'block' : 'hidden'}`} ref={isDesktop ? branchMenuRef : undefined}>
           <button
               type="button"
               onClick={() => setBranchMenuOpen(o => !o)}
@@ -683,8 +722,8 @@ export const SalesAnalytics: React.FC = () => {
       </div>
 
       {/* Chart + Top Items */}
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-3 md:gap-2 md:min-h-0">
-        <div className="lg:col-span-2 bg-white dark:bg-slate-900 p-3 pb-2 rounded-2xl border border-slate-200/80 dark:border-slate-800 shadow-sm flex flex-col min-h-[230px] h-[250px] sm:h-[280px] md:h-auto md:min-h-0">
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-3 md:gap-2">
+        <div className="lg:col-span-2 bg-white dark:bg-slate-900 p-3 pb-2 rounded-2xl border border-slate-200/80 dark:border-slate-800 shadow-sm flex flex-col min-h-[230px] h-[250px] sm:h-[280px] md:h-[300px] lg:h-[320px]">
           <div className="flex items-center justify-between gap-2 shrink-0 mb-1.5">
             <div className="min-w-0">
               <div className="flex items-center gap-2">
@@ -781,7 +820,7 @@ export const SalesAnalytics: React.FC = () => {
         </div>
       </div>
 
-        <div className="bg-white dark:bg-slate-900 p-3 rounded-xl border border-slate-200 dark:border-slate-800 flex flex-col min-h-[280px] md:min-h-0 h-full">
+        <div className="bg-white dark:bg-slate-900 p-3 rounded-xl border border-slate-200 dark:border-slate-800 flex flex-col min-h-[280px]">
           <h2 className="text-base font-bold text-slate-900 dark:text-white mb-2 flex items-center gap-1.5 shrink-0">
             <ShoppingBag className="w-4 h-4 text-amber-500" /> Top Revenue
             <span className="ml-auto text-[11px] font-normal text-slate-500 hidden sm:inline">click → daily sales</span>
@@ -828,8 +867,8 @@ export const SalesAnalytics: React.FC = () => {
         </div>
 
       {/* Bottom: Branch + Weekday — equal card sizes */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-3 md:gap-2 md:min-h-0 md:items-stretch">
-        <div className="bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-800 overflow-hidden flex flex-col min-h-[280px] md:min-h-0 h-full">
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-3 md:gap-2 md:items-stretch">
+        <div className="bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-800 overflow-hidden flex flex-col min-h-[280px]">
           <div className="px-3 sm:px-4 py-2 border-b border-slate-200 dark:border-slate-800 shrink-0 flex items-center justify-between gap-2">
             <h2 className="text-base font-bold text-slate-900 dark:text-white">Sales by Branch</h2>
             <span className="text-[11px] text-slate-500 hidden sm:inline">tap branch → daily</span>
@@ -918,86 +957,100 @@ export const SalesAnalytics: React.FC = () => {
         </div>
       </div>
 
-        <div className="bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-800 overflow-hidden flex flex-col min-h-[280px] md:min-h-0 h-full">
+        <div className="bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-800 overflow-hidden flex flex-col min-h-[280px]">
           <div className="px-3 sm:px-4 py-2 border-b border-slate-200 dark:border-slate-800 shrink-0 flex items-center justify-between gap-2">
             <h2 className="text-base font-bold text-slate-900 dark:text-white">
-              Sales by Weekday <span className="text-[10px] font-normal text-slate-500">₱K</span>
+              This week <span className="text-[10px] font-normal text-slate-500">₱K</span>
             </h2>
             <div className="flex items-center gap-2.5 text-[10px] sm:text-[11px] text-slate-500 shrink-0">
               <span className="flex items-center gap-1"><span className="w-2 h-2 rounded bg-rose-500" />Slow</span>
               <span className="flex items-center gap-1"><span className="w-2 h-2 rounded bg-emerald-500" />Best</span>
+              <span className="text-slate-600 dark:text-slate-500 hidden sm:inline">this week</span>
             </div>
           </div>
           <div className="flex-1 min-h-0 overflow-hidden flex flex-col">
-            {weekdayRows.length === 0 ? (
+            {thisWeekRows.length === 0 ? (
               <p className="text-sm text-slate-400 p-3">No daily sales data yet.</p>
             ) : (
               <table className="w-full table-fixed border-collapse text-[11px] sm:text-sm h-full">
                 <colgroup>
                   <col style={{ width: '22%' }} />
-                  {DAY_SHORT.map(d => (
-                    <col key={d} />
+                  {weekColumns.map(c => (
+                    <col key={c.date} />
                   ))}
                 </colgroup>
                 <thead>
-                  <tr className="bg-slate-50 dark:bg-slate-800 text-slate-500 font-bold uppercase text-[9px] sm:text-[10px] tracking-wide">
-                    <th className="px-1.5 sm:px-2 py-2 text-left">Branch</th>
-                    {DAY_SHORT.map((d, i) => (
-                      <th key={d} className="px-0.5 py-2 text-center font-bold">
-                        {DAY_LETTER[i]}
+                  <tr className="bg-slate-50 dark:bg-slate-800 text-slate-500 font-bold text-[9px] sm:text-[10px] tracking-wide">
+                    <th className="px-1.5 sm:px-2 py-2 text-left uppercase">Branch</th>
+                    {weekColumns.map(c => (
+                      <th
+                        key={c.date}
+                        className={`px-0.5 py-1.5 text-center font-bold ${
+                          c.isToday ? 'text-indigo-500 dark:text-indigo-300' : c.isFuture ? 'text-slate-600' : ''
+                        }`}
+                      >
+                        <div className="uppercase">{c.letter}</div>
+                        <div className={`text-[9px] font-semibold tabular-nums normal-case ${
+                          c.isToday ? 'text-indigo-400' : 'text-slate-500'
+                        }`}>{c.dayNum}</div>
                       </th>
                     ))}
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100 dark:divide-slate-800/50">
-                  {weekdayRows.map((bw, idx) => {
-                    const weakName = bw.weakestDayOfWeek?.name;
-                    const strongName = bw.strongestDayOfWeek?.name;
-                    const colorIdx = branches.findIndex(b => String(b.branch.id) === String(bw.branch.branch.id));
-                    const active = selectedBranch !== 'all' && String(selectedBranch) === String(bw.branch.branch.id);
+                  {thisWeekRows.map((row, idx) => {
+                    const colorIdx = branches.findIndex(b => String(b.branch.id) === String(row.branch.branch.id));
+                    const active = selectedBranch !== 'all' && String(selectedBranch) === String(row.branch.branch.id);
                     return (
-                    <tr
-                      key={bw.branch.branch.id}
-                      onClick={() => setSelectedBranch(bw.branch.branch.id)}
-                      className={`cursor-pointer transition-colors ${
-                        active
-                          ? 'bg-indigo-100/70 dark:bg-indigo-900/40 ring-1 ring-inset ring-indigo-400/40'
-                          : 'hover:bg-slate-50 dark:hover:bg-slate-800/60'
-                      }`}
-                    >
-                      <td className="px-1.5 sm:px-2 py-2 font-bold text-slate-900 dark:text-white truncate">
-                        <span className="inline-block w-2 h-2 rounded-full mr-1 align-middle shrink-0" style={{ background: getBranchColor(colorIdx >= 0 ? colorIdx : idx) }} />
-                        {shortBranchLabel(bw.branch.branch.name)}
-                      </td>
-                      {bw.dayAvgs.map(da => {
-                      const isSlowest = !!weakName && da.name === weakName && da.avg > 0;
-                      const isBest = !!strongName && da.name === strongName && da.avg > 0 && strongName !== weakName;
-                      const clickable = da.avg > 0;
-                      return (
-                        <td key={da.name} className="px-0.5 py-2 text-center align-middle">
-                          <button
-                            type="button"
-                            disabled={!clickable}
-                            onClick={() => openDayPopup(bw.branch.branch.id, bw.branch.branch.name, da.name, da.avg)}
-                            className={`w-full min-h-[28px] rounded-md px-0.5 py-1.5 font-semibold tabular-nums leading-none transition-all ${
-                              !clickable ? 'text-slate-600 cursor-default' :
-                              isSlowest ? 'bg-rose-500/20 text-rose-400 cursor-pointer' :
-                              isBest ? 'bg-emerald-500/20 text-emerald-400 cursor-pointer' :
-                              'text-slate-400 hover:text-slate-200 cursor-pointer'
-                            }`}
-                            title={
-                              !clickable ? undefined :
-                              isSlowest ? `Slowest — ${bw.branch.branch.name} · ${da.name}` :
-                              isBest ? `Best — ${bw.branch.branch.name} · ${da.name}` :
-                              `${bw.branch.branch.name} · ${da.name}`
-                            }
-                          >
-                            {da.avg === 0 ? '—' : da.avg >= 1000 ? Math.round(da.avg / 1000) : Math.round(da.avg)}
-                          </button>
+                      <tr
+                        key={row.branch.branch.id}
+                        onClick={() => setSelectedBranch(row.branch.branch.id)}
+                        className={`cursor-pointer transition-colors ${
+                          active
+                            ? 'bg-indigo-100/70 dark:bg-indigo-900/40 ring-1 ring-inset ring-indigo-400/40'
+                            : 'hover:bg-slate-50 dark:hover:bg-slate-800/60'
+                        }`}
+                      >
+                        <td className="px-1.5 sm:px-2 py-2 font-bold text-slate-900 dark:text-white truncate">
+                          <span className="inline-block w-2 h-2 rounded-full mr-1 align-middle shrink-0" style={{ background: getBranchColor(colorIdx >= 0 ? colorIdx : idx) }} />
+                          {shortBranchLabel(row.branch.branch.name)}
                         </td>
-                      );
-                    })}
-                    </tr>
+                        {row.cells.map(cell => {
+                          const isSlow = row.slowDate === cell.date && cell.sales > 0;
+                          const isBest = row.bestDate === cell.date && cell.sales > 0 && row.bestDate !== row.slowDate;
+                          const clickable = cell.sales > 0;
+                          return (
+                            <td key={cell.date} className="px-0.5 py-2 text-center align-middle">
+                              <button
+                                type="button"
+                                disabled={!clickable}
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  openDayPopup(row.branch.branch.id, row.branch.branch.name, cell.date, cell.sales);
+                                }}
+                                className={`w-full min-h-[28px] rounded-md px-0.5 py-1.5 font-semibold tabular-nums leading-none transition-all ${
+                                  cell.isFuture || !clickable ? 'text-slate-600 cursor-default' :
+                                  isSlow ? 'bg-rose-500/20 text-rose-400 cursor-pointer' :
+                                  isBest ? 'bg-emerald-500/20 text-emerald-400 cursor-pointer' :
+                                  cell.isToday ? 'text-indigo-300 hover:text-indigo-200 cursor-pointer' :
+                                  'text-slate-400 hover:text-slate-200 cursor-pointer'
+                                }`}
+                                title={
+                                  cell.isFuture ? 'Upcoming' :
+                                  !clickable ? `${cell.name} · ${cell.date}` :
+                                  `${cell.name} · ${cell.date} · ${formatFullPeso(cell.sales)}${isSlow ? ' · Slow' : isBest ? ' · Best' : ''}`
+                                }
+                              >
+                                {cell.isFuture || cell.sales === 0
+                                  ? '—'
+                                  : cell.sales >= 1000
+                                    ? Math.round(cell.sales / 1000)
+                                    : Math.round(cell.sales)}
+                              </button>
+                            </td>
+                          );
+                        })}
+                      </tr>
                     );
                   })}
                 </tbody>
@@ -1016,14 +1069,19 @@ export const SalesAnalytics: React.FC = () => {
           >
             <div className="px-4 pt-3.5 pb-2.5 border-b border-slate-100 dark:border-slate-800 flex items-start justify-between gap-3 shrink-0">
               <div className="min-w-0 flex-1">
-                <div className={`text-[10px] font-bold uppercase tracking-widest ${dayPopup.isWeak ? 'text-rose-400' : 'text-indigo-400'}`}>
-                  {dayPopup.isWeak ? 'Dead day' : 'Weekday'}
+                <div className={`text-[10px] font-bold uppercase tracking-widest ${dayPopup.isWeak ? 'text-rose-400' : 'text-emerald-400'}`}>
+                  {dayPopup.isWeak ? 'Down vs prev day' : dayPopup.delta > 0 ? 'Up vs prev day' : 'Day sales'}
                 </div>
                 <h3 className="text-base font-bold text-slate-900 dark:text-white mt-0.5 leading-tight">
                   {shortBranchLabel(dayPopup.branchName)}
                   <span className="text-slate-500 font-semibold"> · {dayPopup.dayName}</span>
-            </h3>
-          </div>
+                </h3>
+                {dayPopup.saleDate && (
+                  <p className="text-[11px] text-slate-400 mt-0.5 tabular-nums">
+                    {parseDateKey(dayPopup.saleDate).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}
+                  </p>
+                )}
+              </div>
               <button
                 type="button"
                 onClick={() => setDayPopup(null)}
@@ -1035,26 +1093,57 @@ export const SalesAnalytics: React.FC = () => {
 
             <div className="grid grid-cols-3 gap-2 px-4 py-2.5 shrink-0">
               <div className="rounded-xl bg-slate-50 dark:bg-slate-800/70 px-2 py-2 text-center min-w-0">
-                <div className="text-[9px] font-bold uppercase text-slate-500 tracking-wide">Day</div>
-                <div className="text-sm font-bold text-slate-900 dark:text-white mt-0.5">{dayPopup.dayName.slice(0, 3)}</div>
-              </div>
-              <div className="rounded-xl bg-slate-50 dark:bg-slate-800/70 px-2 py-2 text-center min-w-0">
-                <div className="text-[9px] font-bold uppercase text-slate-500 tracking-wide">Avg</div>
-                <div className={`text-sm font-bold tabular-nums mt-0.5 ${dayPopup.isWeak ? 'text-rose-400' : 'text-indigo-400'}`}>
-                  {formatPeso(Math.round(dayPopup.avgSales))}
+                <div className="text-[9px] font-bold uppercase tracking-wide text-amber-500 dark:text-amber-400">Prev day</div>
+                {dayPopup.prevSaleDate && (
+                  <div className="text-[10px] font-bold text-amber-600 dark:text-amber-300 tabular-nums mt-0.5">
+                    {parseDateKey(dayPopup.prevSaleDate).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
+                  </div>
+                )}
+                <div
+                  className="text-sm font-bold text-slate-900 dark:text-white tabular-nums mt-1 truncate"
+                  title={formatFullPeso(Math.round(dayPopup.prevDaySales))}
+                >
+                  {dayPopup.prevSaleDate ? formatFullPeso(Math.round(dayPopup.prevDaySales)) : '—'}
                 </div>
               </div>
               <div className="rounded-xl bg-slate-50 dark:bg-slate-800/70 px-2 py-2 text-center min-w-0">
-                <div className="text-[9px] font-bold uppercase text-slate-500 tracking-wide">Total</div>
-                <div className="text-sm font-bold text-emerald-400 tabular-nums mt-0.5 truncate">
-                  {formatPeso(Math.round(dayPopup.totalSales))}
-            </div>
-          </div>
+                <div className={`text-[9px] font-bold uppercase tracking-wide ${
+                  dayPopup.delta >= 0 ? 'text-emerald-500 dark:text-emerald-400' : 'text-rose-500 dark:text-rose-400'
+                }`}>Difference</div>
+                <div className="text-[10px] font-semibold text-slate-500 mt-0.5">change</div>
+                <div className={`text-sm font-bold tabular-nums mt-1 truncate ${
+                  dayPopup.delta >= 0 ? 'text-emerald-500 dark:text-emerald-400' : 'text-rose-500 dark:text-rose-400'
+                }`} title={formatFullPeso(Math.round(dayPopup.delta))}>
+                  {!dayPopup.prevSaleDate
+                    ? '—'
+                    : `${dayPopup.delta >= 0 ? '+' : ''}${formatFullPeso(Math.round(dayPopup.delta))}`}
+                </div>
+              </div>
+              <div className="rounded-xl bg-slate-50 dark:bg-slate-800/70 px-2 py-2 text-center min-w-0">
+                <div className={`text-[9px] font-bold uppercase tracking-wide ${
+                  dayPopup.isWeak ? 'text-rose-500 dark:text-rose-400' : 'text-indigo-500 dark:text-indigo-400'
+                }`}>Current day</div>
+                {dayPopup.saleDate && (
+                  <div className={`text-[10px] font-bold tabular-nums mt-0.5 ${
+                    dayPopup.isWeak ? 'text-rose-400' : 'text-indigo-300'
+                  }`}>
+                    {parseDateKey(dayPopup.saleDate).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
+                  </div>
+                )}
+                <div
+                  className={`text-sm font-bold tabular-nums mt-1 truncate ${dayPopup.isWeak ? 'text-rose-400' : 'text-indigo-400'}`}
+                  title={formatFullPeso(Math.round(dayPopup.avgSales))}
+                >
+                  {formatFullPeso(Math.round(dayPopup.avgSales))}
+                </div>
+              </div>
             </div>
 
             <div className="px-4 pb-3.5 shrink-0">
               <div className="text-[10px] font-bold uppercase tracking-widest text-slate-500 mb-1.5">
-                Top menus · {dayPopup.dayName}
+                Top menus · {dayPopup.saleDate
+                  ? parseDateKey(dayPopup.saleDate).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
+                  : dayPopup.dayName}
               </div>
               {dayLoading ? (
                 <div className="flex items-center justify-center py-8 text-slate-400">
@@ -1177,7 +1266,7 @@ export const SalesAnalytics: React.FC = () => {
                   <div className="rounded-lg md:rounded-xl bg-slate-50 dark:bg-slate-800/80 px-1.5 sm:px-2 md:px-3 py-2 md:py-3 text-center min-w-0 border border-slate-100 dark:border-slate-700/60">
                     <div className="text-[8px] sm:text-[9px] md:text-[10px] font-bold uppercase text-slate-500 dark:text-slate-400 tracking-wide">Best day</div>
                     <div className="text-xs sm:text-sm md:text-lg font-bold text-emerald-600 dark:text-emerald-400 mt-0.5 truncate">
-                      {best ? `${best.dayNum} · ${best.dayName.slice(0, 3)}` : '—'}
+                      {best ? `${best.dayNum} · ${best.dayName}` : '—'}
                     </div>
                   </div>
                   <div className="rounded-lg md:rounded-xl bg-slate-50 dark:bg-slate-800/80 px-1.5 sm:px-2 md:px-3 py-2 md:py-3 text-center min-w-0 border border-slate-100 dark:border-slate-700/60">
@@ -1389,19 +1478,19 @@ export const SalesAnalytics: React.FC = () => {
         </div>
       )}
 
-      {/* Mobile-only floating branch picker — same colors as desktop */}
+      {/* Mobile + phone-landscape floating branch picker — same colors as desktop */}
       {!dayPopup && !menuPopup && !compareOpen && !branchCompareOpen && !isDesktop && (
       <div
         ref={branchMenuRef}
-        className="fixed bottom-0 inset-x-0 z-50 px-3 pt-2 pb-[max(0.75rem,env(safe-area-inset-bottom))] pointer-events-none md:hidden"
+        className="fixed bottom-0 inset-x-0 z-50 px-3 pt-2 pb-[max(0.75rem,env(safe-area-inset-bottom))] pointer-events-none"
       >
-        <div className="pointer-events-auto mx-auto w-[min(68%,280px)] relative">
+        <div className="pointer-events-auto mx-auto w-[min(68%,280px)] landscape:w-[min(42%,240px)] relative">
           {branchMenuOpen && (
-            <div className="absolute bottom-full left-0 right-0 mb-2 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 shadow-xl overflow-hidden">
+            <div className="absolute bottom-full left-0 right-0 mb-2 max-h-[min(50dvh,280px)] overflow-y-auto rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 shadow-xl">
               <button
                 type="button"
                 onClick={() => { setSelectedBranch('all'); setBranchMenuOpen(false); }}
-                className={`w-full text-left px-3 py-2.5 text-sm font-semibold ${
+                className={`w-full text-left px-3 py-2.5 landscape:py-2 text-sm font-semibold ${
                   selectedBranch === 'all'
                     ? 'bg-indigo-50 dark:bg-indigo-950/50 text-indigo-600 dark:text-indigo-300'
                     : 'text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-800'
@@ -1414,7 +1503,7 @@ export const SalesAnalytics: React.FC = () => {
                   key={b.branch.id}
                   type="button"
                   onClick={() => { setSelectedBranch(b.branch.id); setBranchMenuOpen(false); }}
-                  className={`w-full text-left px-3 py-2.5 text-sm font-semibold ${
+                  className={`w-full text-left px-3 py-2.5 landscape:py-2 text-sm font-semibold ${
                     String(selectedBranch) === String(b.branch.id)
                       ? 'bg-indigo-50 dark:bg-indigo-950/50 text-indigo-600 dark:text-indigo-300'
                       : 'text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-800'
@@ -1428,7 +1517,7 @@ export const SalesAnalytics: React.FC = () => {
           <button
             type="button"
             onClick={() => setBranchMenuOpen(o => !o)}
-            className="w-full flex items-center gap-2 pl-3 pr-2.5 py-2.5 rounded-xl bg-indigo-600 text-white font-semibold text-sm shadow-sm hover:bg-indigo-500 active:scale-[0.99] transition"
+            className="w-full flex items-center gap-2 pl-3 pr-2.5 py-2.5 landscape:py-2 rounded-xl bg-indigo-600 text-white font-semibold text-sm shadow-sm hover:bg-indigo-500 active:scale-[0.99] transition"
           >
             <Building2 className="w-4 h-4 text-white/80 shrink-0" />
             <span className="truncate flex-1 text-left text-[13px]">{branchLabel}</span>
