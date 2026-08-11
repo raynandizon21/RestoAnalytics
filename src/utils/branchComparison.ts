@@ -13,10 +13,10 @@ export const COMPARE_METRIC_LABELS = {
   salary: '급여',
   others: '그밖에',
   sections: {
-    sales: 'SALES',
-    expenses: 'EXPENSES',
-    profit: 'PROFIT',
-    mainExpenses: 'MAIN EXPENSES',
+    sales: '매출',
+    expenses: '지출',
+    profit: '순익',
+    mainExpenses: '지출상세',
   },
 } as const;
 

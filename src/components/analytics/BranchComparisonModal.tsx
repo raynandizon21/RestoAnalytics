@@ -58,7 +58,7 @@ function MoneyText({
 function BranchLogo({
   name,
   logo,
-  className = 'w-6 h-6 md:w-10 md:h-10 landscape:w-7 landscape:h-7 md:landscape:w-8 md:landscape:h-8',
+  className = 'w-7 h-7 md:w-14 md:h-14',
 }: {
   name: string;
   logo?: string | null;
@@ -74,18 +74,18 @@ function BranchLogo({
 
   return (
     <span
-      className={`${className} rounded-full bg-white border border-slate-600 overflow-hidden flex items-center justify-center shrink-0`}
+      className={`${className} rounded-full overflow-hidden flex items-center justify-center shrink-0 ${show ? 'bg-transparent border-0' : 'bg-slate-100 dark:bg-slate-800 border-0'}`}
       title={name}
     >
       {show ? (
         <img
           src={url!}
           alt=""
-          className="w-full h-full object-cover"
+          className="w-full h-full object-contain"
           onError={() => setFailed(true)}
         />
       ) : (
-        <span className="text-[9px] md:text-base font-black uppercase text-indigo-600 dark:text-indigo-300 bg-slate-100 dark:bg-slate-800 w-full h-full flex items-center justify-center">
+        <span className="text-[10px] md:text-lg font-black uppercase text-indigo-600 dark:text-indigo-300 w-full h-full flex items-center justify-center">
           {name.trim().charAt(0) || '?'}
         </span>
       )}
@@ -117,7 +117,7 @@ function PeerPctBadge({
       title="% of sales vs peer average"
     >
       {safe.toFixed(1)}%
-      <Info className="w-2.5 h-2.5 opacity-60" />
+      <Info className="w-2.5 h-2.5 md:w-3 md:h-3 opacity-60" />
     </button>
   );
 }
@@ -150,7 +150,7 @@ function WindowCellView({
     >
       <MoneyText
         n={cell.baselineAmount}
-        className="text-[10px] md:text-xs lg:text-sm font-semibold text-slate-800 dark:text-slate-200 tabular-nums max-w-full"
+        className="text-[10px] md:text-sm font-semibold text-slate-800 dark:text-slate-200 tabular-nums max-w-full"
       />
       {cell.sentiment === 'neutral' ? (
         <span className="text-[8px] md:text-[11px] font-medium text-slate-500">—</span>
@@ -180,6 +180,8 @@ export const BranchComparisonModal: React.FC<Props> = ({ open, onClose, initialR
   const [fitScale, setFitScale] = useState(1);
   /** True desktop only — phone landscape often has width ≥768 but short height. */
   const [desktopFit, setDesktopFit] = useState(false);
+  /** Mobile landscape (or tall content): allow vertical scroll instead of clipping. */
+  const [mobileNeedsScroll, setMobileNeedsScroll] = useState(false);
 
   const [modalState, setModalState] = useState<PopupModalState>({
     isOpen: false,
@@ -241,7 +243,7 @@ export const BranchComparisonModal: React.FC<Props> = ({ open, onClose, initialR
 
   /**
    * Desktop: scale to fit width+height (no scroll).
-   * Mobile / phone landscape: width-fit only — always allow vertical scroll.
+   * Mobile: width-fit shrink + stretch table height to fill leftover blank space.
    */
   useLayoutEffect(() => {
     if (!open || loading) return;
@@ -254,6 +256,10 @@ export const BranchComparisonModal: React.FC<Props> = ({ open, onClose, initialR
       content.style.transform = 'none';
       content.style.width = '';
       content.style.maxWidth = '';
+      content.style.minHeight = '';
+      content.style.height = '';
+      content.style.display = '';
+      content.style.flexDirection = '';
       void content.offsetHeight;
 
       const sh = Math.max(content.scrollHeight, 1);
@@ -267,13 +273,41 @@ export const BranchComparisonModal: React.FC<Props> = ({ open, onClose, initialR
       }
 
       const isDesktop = window.matchMedia('(min-width: 768px) and (min-height: 560px)').matches;
+
+      if (isDesktop) {
+        // Fit entire board in viewport — no scroll (scale down width + height).
+        const s = Math.max(0.45, Math.min(roomW / sw, roomH / sh, 1));
+        const next = Number.isFinite(s) ? Number(s.toFixed(4)) : 1;
+        content.style.zoom = next < 0.999 ? String(next) : '';
+        setFitScale((prev) => (Math.abs(prev - next) < 0.004 ? prev : next));
+        return;
+      }
+
+      // Mobile: width-fit. Portrait (fits height) → stretch to fill. Landscape (overflow) → scroll.
       const scaleW = sw > roomW ? roomW / sw : 1;
-      // Height-fit only on desktop so mobile/landscape can still scroll the full board.
-      const scaleH = isDesktop && sh > roomH ? roomH / sh : 1;
-      const minScale = isDesktop ? 0.52 : 0.78;
-      const s = Math.max(minScale, Math.min(scaleW, scaleH, 1));
+      const s = Math.max(0.78, Math.min(scaleW, 1));
       const next = Number.isFinite(s) ? Number(s.toFixed(4)) : 1;
       content.style.zoom = next < 0.999 ? String(next) : '';
+
+      const visualH = sh * next;
+      const overflows = visualH > roomH + 2;
+      setMobileNeedsScroll(overflows);
+
+      if (overflows) {
+        // Landscape / short viewport: keep natural height so user can scroll.
+        content.style.minHeight = '';
+        content.style.height = '';
+        content.style.display = '';
+        content.style.flexDirection = '';
+      } else {
+        // Portrait: stretch table to fill leftover blank space.
+        const targetH = Math.ceil(roomH / Math.max(next, 0.01));
+        content.style.minHeight = `${targetH}px`;
+        content.style.height = `${targetH}px`;
+        content.style.display = 'flex';
+        content.style.flexDirection = 'column';
+      }
+
       setFitScale((prev) => (Math.abs(prev - next) < 0.004 ? prev : next));
     };
 
@@ -414,9 +448,19 @@ export const BranchComparisonModal: React.FC<Props> = ({ open, onClose, initialR
   if (!open) return null;
 
   const colCount = Math.max(data.length, 1);
+  /** border-b on the cell itself — tr borders vanish on sticky columns */
+  /** Desktop sizes matched to restoAdmin; compact py so board fits without scroll */
   const metricSticky =
-    'sticky left-0 z-10 bg-white dark:bg-slate-900 border-r border-slate-200 dark:border-slate-800 px-1 md:px-2 py-1 text-[9px] md:text-[11px] font-semibold leading-tight text-right';
-
+    'sticky left-0 z-10 bg-white dark:bg-slate-900 border-r border-b border-slate-200 dark:border-slate-800 px-1 md:px-3 py-1 md:py-1.5 text-[10px] md:text-sm font-semibold leading-tight text-left align-middle';
+  const metricLabelWhite = `${metricSticky} text-slate-900 dark:text-white`;
+  const metricLabelOrange = `${metricSticky} text-orange-500 dark:text-orange-400`;
+  const metricValueCell =
+    'px-0.5 md:px-3 py-1 md:py-1.5 border-l border-b border-slate-200/60 dark:border-slate-800/60 align-middle';
+  const windowValueCell =
+    'px-0.5 md:px-3 py-0.5 md:py-1 border-l border-b border-slate-200/60 dark:border-slate-800/60 align-middle';
+  /** Same height for 매출액 / 비용 / 순이익 (sales has no badge) */
+  const totalsCellInner =
+    'flex flex-col items-start justify-center gap-1 min-w-0 min-h-[2.75rem] md:min-h-[3rem]';
   const mobileMonthLabel = monthLabel
     .replace(/\s+\d{4}/, '')
     .replace(/\s*\(MTD\)/i, '')
@@ -438,13 +482,13 @@ export const BranchComparisonModal: React.FC<Props> = ({ open, onClose, initialR
           }}
           className={`inline-flex items-center font-semibold text-slate-700 dark:text-slate-100 transition ${
             desktopFit
-              ? 'justify-center gap-1.5 px-2.5 py-1.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-xs'
+              ? 'justify-center gap-2 px-3 py-2 rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-sm'
               : 'justify-center gap-0.5 pl-1.5 pr-2 py-1 rounded-full border border-sky-400/40 bg-sky-500/15 text-[10px] leading-none active:scale-[0.98]'
           }`}
           title="Multi-Branch Board"
           aria-label={`Multi-Branch Board, ${monthLabel}`}
         >
-          <Calendar className={`shrink-0 ${desktopFit ? 'w-3.5 h-3.5 text-sky-500 dark:text-sky-400' : 'w-3 h-3 text-sky-400'}`} />
+          <Calendar className={`shrink-0 ${desktopFit ? 'w-4 h-4 text-sky-500 dark:text-sky-400' : 'w-3 h-3 text-sky-400'}`} />
           <span className="tabular-nums whitespace-nowrap">
             {desktopFit ? monthLabel : mobileMonthLabel}
           </span>
@@ -512,11 +556,17 @@ export const BranchComparisonModal: React.FC<Props> = ({ open, onClose, initialR
     <ModalPortal>
       <>
         <div
-          className="fixed inset-0 z-[70] flex items-stretch justify-center p-0 bg-slate-950/50 dark:bg-slate-950/90"
+          className={`fixed inset-0 z-[70] flex justify-center bg-slate-950/50 dark:bg-slate-950/90 ${
+            desktopFit ? 'items-center p-3 md:p-4' : 'items-stretch p-0'
+          }`}
           onClick={onClose}
         >
           <div
-            className="relative w-screen max-w-[100vw] h-[100dvh] max-h-[100dvh] flex flex-col bg-white dark:bg-slate-900 rounded-none shadow-none border-0 overflow-hidden pt-[env(safe-area-inset-top)] pb-[env(safe-area-inset-bottom)]"
+            className={`relative flex flex-col bg-white dark:bg-slate-900 overflow-hidden ${
+              desktopFit
+                ? 'w-[min(1600px,96vw)] h-[min(960px,94dvh)] max-h-[94dvh] rounded-2xl border border-slate-200 dark:border-slate-700 shadow-2xl'
+                : 'w-screen max-w-[100vw] h-[100dvh] max-h-[100dvh] rounded-none border-0 shadow-none pt-[env(safe-area-inset-top)] pb-[env(safe-area-inset-bottom)]'
+            }`}
             onClick={(e) => e.stopPropagation()}
           >
             {/* Desktop: top-right bar. Mobile: date + X as matching overlays. */}
@@ -596,13 +646,15 @@ export const BranchComparisonModal: React.FC<Props> = ({ open, onClose, initialR
               </>
             )}
 
-            {/* Table — desktop: scale-to-fit + no scroll; mobile/landscape: width-fit + vertical scroll */}
+            {/* Table — desktop: scale-to-fit; mobile portrait: stretch; mobile landscape: scroll */}
             <div
               ref={fitWrapRef}
               className={`flex-1 min-h-0 overscroll-contain [-webkit-overflow-scrolling:touch] ${
                 desktopFit
                   ? 'overflow-hidden flex items-center justify-center'
-                  : 'overflow-y-auto overflow-x-auto'
+                  : mobileNeedsScroll
+                    ? 'overflow-y-auto overflow-x-auto'
+                    : 'overflow-hidden'
               }`}
             >
               {loading ? (
@@ -617,14 +669,14 @@ export const BranchComparisonModal: React.FC<Props> = ({ open, onClose, initialR
               ) : (
                 <div
                   ref={fitContentRef}
-                  className="origin-center w-full max-w-full"
+                  className={`origin-top w-full max-w-full ${desktopFit || mobileNeedsScroll ? '' : 'min-h-full'}`}
                   style={
                     fitScale < 0.999
                       ? ({ zoom: fitScale } as React.CSSProperties)
                       : undefined
                   }
                 >
-                <table className="w-full table-fixed border-collapse">
+                <table className={`w-full table-fixed border-separate border-spacing-0 ${desktopFit || mobileNeedsScroll ? '' : 'h-full min-h-full flex-1'}`}>
                   <colgroup>
                     <col className="w-[22%] sm:w-[20%] md:w-[18%]" />
                     {data.map((item) => (
@@ -632,21 +684,21 @@ export const BranchComparisonModal: React.FC<Props> = ({ open, onClose, initialR
                     ))}
                   </colgroup>
                   <thead className="bg-white dark:bg-slate-900">
-                    <tr className="border-b border-slate-200 dark:border-slate-800">
-                      <th className="sticky top-0 left-0 z-40 bg-white dark:bg-slate-900 border-r border-slate-200 dark:border-slate-800 px-1 md:px-2 py-2 md:py-3 text-[9px] md:text-xs font-bold tracking-wide text-indigo-600 dark:text-indigo-300 text-right shadow-[0_1px_0_0_rgba(148,163,184,0.25)] align-middle">
-                        <span className="block leading-tight">
+                    <tr>
+                      <th className="sticky top-0 left-0 z-40 bg-white dark:bg-slate-900 border-r border-b-2 border-slate-200 dark:border-slate-600 px-1 md:px-3 py-2 md:py-2.5 text-xs md:text-base font-bold tracking-wide text-indigo-600 dark:text-indigo-300 text-center align-middle">
+                        <span className="block leading-tight whitespace-nowrap">
                           업장별 비교
                         </span>
                       </th>
                       {data.map((item) => (
                         <th
                           key={item.branch.id}
-                          className="sticky top-0 z-30 bg-white dark:bg-slate-900 px-0.5 md:px-3 py-1.5 md:py-3 text-left border-l border-slate-200/80 dark:border-slate-800/80 shadow-[0_1px_0_0_rgba(148,163,184,0.25)]"
+                          className="sticky top-0 z-30 bg-white dark:bg-slate-900 px-0.5 md:px-3 py-1.5 md:py-2 text-left border-l border-b-2 border-slate-200 dark:border-slate-600"
                         >
-                          <div className="flex flex-col md:flex-row items-center justify-center md:justify-start gap-0.5 md:gap-2 min-w-0">
+                          <div className="flex flex-col md:flex-row items-center justify-center md:justify-start gap-0.5 md:gap-3 min-w-0">
                             <BranchLogo name={item.branch.name} logo={item.branch.logo} />
                             <span
-                              className="text-[8px] md:text-sm lg:text-base font-bold text-slate-900 dark:text-white leading-tight line-clamp-2 px-0.5 min-w-0 text-center md:text-left"
+                              className="text-[8px] md:text-base font-bold text-slate-900 dark:text-white leading-tight line-clamp-2 px-0.5 min-w-0 text-center md:text-left"
                               title={item.branch.name}
                             >
                               <span className="md:hidden">{shortName(item.branch.name)}</span>
@@ -658,30 +710,30 @@ export const BranchComparisonModal: React.FC<Props> = ({ open, onClose, initialR
                     </tr>
                   </thead>
 
-                  <tbody>
-                    <tr className="border-b border-slate-200/80 dark:border-slate-800/80">
-                      <td className={`${metricSticky} text-slate-600 dark:text-slate-300`}>{COMPARE_METRIC_LABELS.totalSales}</td>
+                  <tbody className={desktopFit || mobileNeedsScroll ? undefined : 'h-full'}>
+                    <tr className="[&>td]:min-h-[2.75rem] md:[&>td]:min-h-[3.25rem]">
+                      <td className={metricLabelWhite}>{COMPARE_METRIC_LABELS.totalSales}</td>
                       {data.map((item) => (
-                        <td key={item.branch.id} className="px-0.5 md:px-3 py-1.5 md:py-2 border-l border-slate-200/60 dark:border-slate-800/60 align-top">
-                          <div className="flex flex-col items-start gap-0.5 min-w-0">
+                        <td key={item.branch.id} className={metricValueCell}>
+                          <div className={totalsCellInner}>
                             <MoneyText
                               n={item.totals.sales}
-                              className="text-[10px] md:text-xs lg:text-sm font-bold text-sky-600 dark:text-sky-400 tabular-nums max-w-full"
+                              className="text-[10px] md:text-sm font-semibold text-sky-600 dark:text-sky-400 tabular-nums max-w-full"
                             />
                           </div>
                         </td>
                       ))}
                     </tr>
 
-                    <tr className="border-b border-slate-200/80 dark:border-slate-800/80">
-                      <td className={`${metricSticky} text-orange-500 dark:text-orange-400`}>{COMPARE_METRIC_LABELS.totalExpenses}</td>
+                    <tr className="[&>td]:min-h-[2.75rem] md:[&>td]:min-h-[3.25rem]">
+                      <td className={metricLabelOrange}>{COMPARE_METRIC_LABELS.totalExpenses}</td>
                       {data.map((item) => {
                         return (
-                          <td key={item.branch.id} className="px-0.5 md:px-3 py-1.5 md:py-2 border-l border-slate-200/60 dark:border-slate-800/60 align-top">
-                            <div className="flex flex-col items-start gap-0.5 min-w-0">
+                          <td key={item.branch.id} className={metricValueCell}>
+                            <div className={totalsCellInner}>
                               <MoneyText
                                 n={item.totals.expenses}
-                                className="text-[10px] md:text-xs lg:text-sm font-bold text-orange-500 dark:text-orange-400 tabular-nums max-w-full"
+                                className="text-[10px] md:text-sm font-semibold text-orange-500 dark:text-orange-400 tabular-nums max-w-full"
                               />
                               <PeerPctBadge
                                 pct={item.totals.expenseRate}
@@ -696,15 +748,15 @@ export const BranchComparisonModal: React.FC<Props> = ({ open, onClose, initialR
                       })}
                     </tr>
 
-                    <tr className="border-b border-slate-200/80 dark:border-slate-800/80">
-                      <td className={`${metricSticky} text-slate-600 dark:text-slate-300`}>{COMPARE_METRIC_LABELS.totalProfit}</td>
+                    <tr className="[&>td]:min-h-[2.75rem] md:[&>td]:min-h-[3.25rem]">
+                      <td className={metricLabelWhite}>{COMPARE_METRIC_LABELS.totalProfit}</td>
                       {data.map((item) => {
                         return (
-                          <td key={item.branch.id} className="px-0.5 md:px-3 py-1.5 md:py-2 border-l border-slate-200/60 dark:border-slate-800/60 align-top">
-                            <div className="flex flex-col items-start gap-0.5 min-w-0">
+                          <td key={item.branch.id} className={metricValueCell}>
+                            <div className={totalsCellInner}>
                               <MoneyText
                                 n={item.totals.netProfit}
-                                className={`text-[10px] md:text-xs lg:text-sm font-bold tabular-nums max-w-full ${item.totals.netProfit >= 0 ? 'text-emerald-600 dark:text-emerald-400' : 'text-red-600 dark:text-red-400'}`}
+                                className={`text-[10px] md:text-sm font-semibold tabular-nums max-w-full ${item.totals.netProfit >= 0 ? 'text-emerald-600 dark:text-emerald-400' : 'text-red-600 dark:text-red-400'}`}
                               />
                               <PeerPctBadge
                                 pct={item.totals.profitRate}
@@ -721,31 +773,31 @@ export const BranchComparisonModal: React.FC<Props> = ({ open, onClose, initialR
 
                     {(
                       [
-                        ['sales', COMPARE_METRIC_LABELS.sections.sales, 'samePeriod', 'fullPrevMonth'] as const,
-                        ['expenses', COMPARE_METRIC_LABELS.sections.expenses, 'samePeriod', 'fullPrevMonth'] as const,
-                        ['profit', COMPARE_METRIC_LABELS.sections.profit, 'samePeriod', 'fullPrevMonth'] as const,
+                        ['sales', COMPARE_METRIC_LABELS.sections.sales, 'samePeriod', 'fullPrevMonth', 'text-slate-900 dark:text-white'] as const,
+                        ['expenses', COMPARE_METRIC_LABELS.sections.expenses, 'samePeriod', 'fullPrevMonth', 'text-orange-500 dark:text-orange-400'] as const,
+                        ['profit', COMPARE_METRIC_LABELS.sections.profit, 'samePeriod', 'fullPrevMonth', 'text-slate-900 dark:text-white'] as const,
                       ]
-                    ).map(([section, sectionLabel, sameKey, momKey]) => {
+                    ).map(([section, sectionLabel, sameKey, momKey, sectionColor]) => {
                       const windowsKey =
                         section === 'sales' ? 'salesWindows' : section === 'expenses' ? 'expensesWindows' : 'profitWindows';
                       return (
                         <React.Fragment key={section}>
-                          <tr className="bg-sky-500/10 border-y border-sky-400/20">
+                          <tr className="bg-sky-500/10">
                             <td
                               colSpan={colCount + 1}
-                              className="px-2 py-1.5 md:py-2 text-center text-[10px] md:text-xs font-black uppercase tracking-[0.16em] text-sky-600 dark:text-sky-400"
+                              className={`px-2 md:px-3 py-1 md:py-1.5 text-center text-[10px] md:text-sm font-black uppercase tracking-[0.12em] border-y border-sky-400/20 ${sectionColor}`}
                             >
                               {sectionLabel}
                             </td>
                           </tr>
-                          <tr className="border-b border-slate-200/80 dark:border-slate-800/80">
-                            <td className={`${metricSticky} text-slate-500 dark:text-slate-400`} title={COMPARE_METRIC_LABELS.vsSamePeriod}>
-                              <span className="line-clamp-3 md:line-clamp-none">{COMPARE_METRIC_LABELS.vsSamePeriod}</span>
+                          <tr>
+                            <td className={metricLabelWhite} title={COMPARE_METRIC_LABELS.vsSamePeriod}>
+                              <span className="line-clamp-3 md:line-clamp-none font-semibold">{COMPARE_METRIC_LABELS.vsSamePeriod}</span>
                             </td>
                             {data.map((item) => {
                               const cell = item[windowsKey][sameKey];
                               return (
-                                <td key={item.branch.id} className="px-0.5 md:px-2 py-1 md:py-1.5 border-l border-slate-200/60 dark:border-slate-800/60 align-top">
+                                <td key={item.branch.id} className={windowValueCell}>
                                   <WindowCellView
                                     cell={cell}
                                     onClick={(e) =>
@@ -764,12 +816,12 @@ export const BranchComparisonModal: React.FC<Props> = ({ open, onClose, initialR
                               );
                             })}
                           </tr>
-                          <tr className="border-b border-slate-200/80 dark:border-slate-800/80">
-                            <td className={`${metricSticky} text-slate-500 dark:text-slate-400`}>{COMPARE_METRIC_LABELS.vsLastMonth}</td>
+                          <tr>
+                            <td className={metricLabelWhite}>{COMPARE_METRIC_LABELS.vsLastMonth}</td>
                             {data.map((item) => {
                               const cell = item[windowsKey][momKey];
                               return (
-                                <td key={item.branch.id} className="px-0.5 md:px-2 py-1 md:py-1.5 border-l border-slate-200/60 dark:border-slate-800/60 align-top">
+                                <td key={item.branch.id} className={windowValueCell}>
                                   <WindowCellView
                                     cell={cell}
                                     onClick={(e) =>
@@ -792,10 +844,10 @@ export const BranchComparisonModal: React.FC<Props> = ({ open, onClose, initialR
                       );
                     })}
 
-                    <tr className="bg-sky-500/10 border-y border-sky-400/20">
+                    <tr className="bg-sky-500/10">
                       <td
                         colSpan={colCount + 1}
-                        className="px-2 py-1.5 md:py-2 text-center text-[10px] md:text-xs font-black uppercase tracking-[0.16em] text-sky-600 dark:text-sky-400"
+                        className="px-2 md:px-3 py-1 md:py-1.5 text-center text-[10px] md:text-sm font-black uppercase tracking-[0.12em] text-slate-900 dark:text-white border-y border-sky-400/20"
                       >
                         {COMPARE_METRIC_LABELS.sections.mainExpenses}
                       </td>
@@ -808,14 +860,14 @@ export const BranchComparisonModal: React.FC<Props> = ({ open, onClose, initialR
                         ['others', COMPARE_METRIC_LABELS.others],
                       ] as const
                     ).map(([key, label]) => (
-                      <tr key={key} className="border-b border-slate-200/80 dark:border-slate-800/80">
-                        <td className={`${metricSticky} text-slate-800 dark:text-slate-200 text-[10px] md:text-[13px]`} title={label}>
+                      <tr key={key}>
+                        <td className={metricLabelWhite} title={label}>
                           <span className="line-clamp-2 font-semibold">{label}</span>
                         </td>
                         {data.map((item) => {
                           const cat = item.mainExpenses[key];
                           return (
-                            <td key={item.branch.id} className="px-0.5 md:px-3 py-2 md:py-2.5 border-l border-slate-200/60 dark:border-slate-800/60 align-top">
+                            <td key={item.branch.id} className={metricValueCell}>
                               <button
                                 type="button"
                                 onClick={(e) =>
@@ -825,9 +877,9 @@ export const BranchComparisonModal: React.FC<Props> = ({ open, onClose, initialR
                               >
                                 <MoneyText
                                   n={cat.amount}
-                                  className="text-[11px] md:text-sm font-bold text-slate-900 dark:text-white tabular-nums max-w-full"
+                                  className="text-[11px] md:text-sm font-semibold text-slate-900 dark:text-white tabular-nums max-w-full"
                                 />
-                                <span className="text-[9px] md:text-sm text-sky-600 dark:text-sky-400 font-semibold tabular-nums">
+                                <span className="text-[9px] md:text-[11px] text-sky-600 dark:text-sky-400 font-medium tabular-nums">
                                   ({cat.ratioOfSales.toFixed(1)}%)
                                 </span>
                               </button>
@@ -838,7 +890,7 @@ export const BranchComparisonModal: React.FC<Props> = ({ open, onClose, initialR
                     ))}
                     {/* Spacer so last Main Expenses row isn't flush under mobile home indicator */}
                     <tr aria-hidden className="md:hidden">
-                      <td colSpan={colCount + 1} className="h-4 border-0 p-0" />
+                      <td colSpan={colCount + 1} className="h-3 border-0 p-0" />
                     </tr>
                   </tbody>
                 </table>
