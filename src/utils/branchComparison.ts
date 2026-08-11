@@ -257,12 +257,14 @@ export function buildMainExpenseCategory(
   amount: number,
   sales: number,
 ): MainExpenseCategoryData {
+  const amt = Math.trunc(Number(amount) || 0);
+  const salesN = Number(sales) || 0;
   return {
     id,
     labelKorean,
     labelEnglish: labelKorean,
-    amount: Math.round(amount),
-    ratioOfSales: sales > 0 ? +((amount / sales) * 100).toFixed(1) : 0,
+    amount: amt,
+    ratioOfSales: salesN > 0 ? +((amt / salesN) * 100).toFixed(1) : 0,
   };
 }
 

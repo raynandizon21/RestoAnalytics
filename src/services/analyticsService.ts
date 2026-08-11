@@ -108,7 +108,18 @@ export function normalizeSaleDateKey(val: unknown): string {
 }
 
 export function todayKey(): string {
-  return toDateKey(new Date());
+  return manilaTodayKey();
+}
+
+function manilaTodayKey(): string {
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Asia/Manila',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).formatToParts(new Date());
+  const get = (type: string) => parts.find((p) => p.type === type)?.value || '00';
+  return `${get('year')}-${get('month')}-${get('day')}`;
 }
 
 /** Clamp end_date to today if in the future. */
@@ -129,12 +140,12 @@ export function makeRange(start: string, end: string): DateRange {
   return clampRangeToToday(a <= b ? { start_date: a, end_date: b } : { start_date: b, end_date: a });
 }
 
-/** Current calendar month MTD (1st → today). */
+/** Current calendar month MTD (1st → today Asia/Manila). */
 export function getCurrentMonthRange(): DateRange {
-  const today = new Date();
+  const today = todayKey();
   return {
-    start_date: `${today.getFullYear()}-${pad2(today.getMonth() + 1)}-01`,
-    end_date: toDateKey(today),
+    start_date: `${today.slice(0, 7)}-01`,
+    end_date: today,
   };
 }
 
@@ -143,12 +154,12 @@ export function getCurrentMonthRange(): DateRange {
  * Current month → MTD; other months → full month.
  */
 export function getMonthRange(year: number, monthIndex: number): DateRange {
-  const today = new Date();
+  const today = todayKey();
   const start_date = `${year}-${pad2(monthIndex + 1)}-01`;
   const isCurrent =
-    year === today.getFullYear() && monthIndex === today.getMonth();
+    year === Number(today.slice(0, 4)) && monthIndex + 1 === Number(today.slice(5, 7));
   if (isCurrent) {
-    return { start_date, end_date: toDateKey(today) };
+    return { start_date, end_date: today };
   }
   const lastDay = new Date(year, monthIndex + 1, 0).getDate();
   return {
@@ -161,12 +172,12 @@ export function getMonthRange(year: number, monthIndex: number): DateRange {
  * Full calendar year. Current year → YTD (Jan 1 → today); past years → Jan 1 → Dec 31.
  */
 export function getYearRange(year: number): DateRange {
-  const today = new Date();
+  const today = todayKey();
   const start_date = `${year}-01-01`;
-  if (year === today.getFullYear()) {
-    return { start_date, end_date: toDateKey(today) };
+  if (year === Number(today.slice(0, 4))) {
+    return { start_date, end_date: today };
   }
-  if (year > today.getFullYear()) {
+  if (year > Number(today.slice(0, 4))) {
     return getCurrentMonthRange();
   }
   return { start_date, end_date: `${year}-12-31` };
@@ -487,6 +498,8 @@ export async function fetchBranchComparisonBoard(
 
   return sorted.map((b) => {
     const bid = String(b.id);
+    // Keep raw floats like restoAdmin; display layer Math.trunc each metric independently
+    // so profit shows trunc(sales-expenses) (= ₱87,196), not trunc(s)-trunc(e) (= ₱87,197).
     const sales = selectedMaps.sales[bid] ?? (Number(b.totalSales) || 0);
     const expenses = selectedMaps.expenses[bid] ?? (Number(b.totalExpenses) || 0);
     const profit = sales - expenses;
@@ -760,12 +773,15 @@ export async function fetchDailyPerBranch(range?: DateRange): Promise<DailyBranc
   if (!data?.data?.length) return [];
   return data.data.map((r: any) => {
     const date = normalizeSaleDateKey(r.sale_date);
+    // Prefer gross total_sales (paid+discount) so week/day views match Daily Trend + restoAdmin chart
+    const gross = Number(r.total_sales);
+    const net = Number(r.net_sales);
     return {
       branchId: String(r.branch_id),
       branchName: r.branch_name,
       date,
       dayName: r.day_name,
-      netSales: Number(r.net_sales) || 0,
+      netSales: Number.isFinite(gross) && gross > 0 ? gross : (Number.isFinite(net) ? net : 0),
       orderCount: Number(r.order_count) || 0,
     };
   });
@@ -1014,22 +1030,30 @@ export async function fetchPeriodCompare(
 
 export function getBranchColor(idx: number) { return BRANCH_COLORS[idx % BRANCH_COLORS.length]; }
 
+/** Match restoAdmin AdminDashboard: truncate (not round) before display. */
+function truncAmount(val: number) {
+  const n = Number(val);
+  return Math.trunc(Number.isFinite(n) ? n : 0);
+}
+
 export function formatPeso(val: number) {
-  if (val >= 1_000_000) return `₱${(val / 1_000_000).toFixed(2)}M`;
-  if (val >= 1_000) return `₱${(val / 1_000).toFixed(0)}K`;
-  return `₱${val.toLocaleString('en-PH', { maximumFractionDigits: 0 })}`;
+  const n = truncAmount(val);
+  if (Math.abs(n) >= 1_000_000) return `₱${(n / 1_000_000).toFixed(2)}M`;
+  if (Math.abs(n) >= 1_000) return `₱${(n / 1_000).toFixed(0)}K`;
+  return `₱${n.toLocaleString('en-PH', { maximumFractionDigits: 0 })}`;
 }
 
 /** Compact amount without ₱ — for dense mobile tables / chart axes */
 export function formatCompact(val: number) {
-  const n = Math.abs(Number(val) || 0);
+  const n = Math.abs(truncAmount(val));
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
   if (n >= 1_000) return `${Math.round(n / 1_000)}K`;
-  return `${Math.round(n)}`;
+  return `${n}`;
 }
 
 export function formatFullPeso(val: number) {
-  return `₱${val.toLocaleString('en-PH', { maximumFractionDigits: 0 })}`;
+  const n = truncAmount(val);
+  return `₱${n.toLocaleString('en-PH', { maximumFractionDigits: 0 })}`;
 }
 
 /** Preferred display order for active branches */

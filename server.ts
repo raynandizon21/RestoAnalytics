@@ -42,29 +42,66 @@ const pool = mysql.createPool({
   }
 })();
 
-// ─── Helper: date range for current month ───
-function getCurrentMonthRange() {
-  const today = new Date();
-  const pad = (n: number) => String(n).padStart(2, "0");
+const pad2 = (n: number) => String(n).padStart(2, "0");
+
+/** Asia/Manila calendar parts (same as restoAdmin manilaDateTime). */
+function manilaYmdParts(d = new Date()) {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Manila",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(d);
+  const get = (type: string) => parts.find((p) => p.type === type)?.value || "00";
   return {
-    start_date: `${today.getFullYear()}-${pad(today.getMonth() + 1)}-01`,
-    end_date: `${today.getFullYear()}-${pad(today.getMonth() + 1)}-${pad(today.getDate())}`,
+    year: Number(get("year")),
+    month: Number(get("month")),
+    day: Number(get("day")),
   };
+}
+
+/** Current month MTD in Asia/Manila (1st → today PH). */
+function getCurrentMonthRange() {
+  const { year, month, day } = manilaYmdParts();
+  return {
+    start_date: `${year}-${pad2(month)}-01`,
+    end_date: `${year}-${pad2(month)}-${pad2(day)}`,
+  };
+}
+
+/**
+ * Sargable Asia/Manila (+08:00) inclusive day-range — matches restoAdmin phDateRange.js.
+ * Placeholders: start, start, end, end.
+ */
+function phLocalDayRangeFilter(column: string, startDate: string, endDate: string) {
+  const start = String(startDate || "").slice(0, 10);
+  const end = String(endDate || "").slice(0, 10);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(start) || !/^\d{4}-\d{2}-\d{2}$/.test(end)) {
+    return { sql: "", params: [] as string[] };
+  }
+  const sql = ` AND ${column} >= COALESCE(
+		CONVERT_TZ(CONCAT(?, ' 00:00:00'), '+08:00', @@session.time_zone),
+		DATE_SUB(CONCAT(?, ' 00:00:00'), INTERVAL 8 HOUR)
+	) AND ${column} < COALESCE(
+		CONVERT_TZ(DATE_ADD(CONCAT(?, ' 00:00:00'), INTERVAL 1 DAY), '+08:00', @@session.time_zone),
+		DATE_SUB(DATE_ADD(CONCAT(?, ' 00:00:00'), INTERVAL 1 DAY), INTERVAL 8 HOUR)
+	)`;
+  return { sql, params: [start, start, end, end] };
 }
 
 const EXCLUDED_BRANCHES = ['NOIR BY EESOME', '3Core', '3CORE'];
 
 /** Same calendar days last month (fair MTD vs MTD). Caps at last day of prev month. */
 function getPrevMonthSamePeriodRange() {
-  const today = new Date();
-  const day = today.getDate();
-  const prev = new Date(today.getFullYear(), today.getMonth() - 1, 1);
-  const lastDayPrev = new Date(today.getFullYear(), today.getMonth(), 0).getDate();
+  const { year, month, day } = manilaYmdParts();
+  const prevMonthDate = new Date(Date.UTC(year, month - 2, 1));
+  const prevYear = prevMonthDate.getUTCFullYear();
+  const prevMonth = prevMonthDate.getUTCMonth() + 1;
+  const lastDayPrev = new Date(Date.UTC(year, month - 1, 0)).getUTCDate();
   const endDay = Math.min(day, lastDayPrev);
-  const pad = (n: number) => String(n).padStart(2, "0");
   return {
-    start_date: `${prev.getFullYear()}-${pad(prev.getMonth() + 1)}-01`,
-    end_date: `${prev.getFullYear()}-${pad(prev.getMonth() + 1)}-${pad(endDay)}`,
+    start_date: `${prevYear}-${pad2(prevMonth)}-01`,
+    end_date: `${prevYear}-${pad2(prevMonth)}-${pad2(endDay)}`,
   };
 }
 
@@ -124,6 +161,8 @@ async function startServer() {
   });
 
   // ─── Admin Dashboard Bundle (main analytics endpoint) ───
+  // Sales / expenses / profit aligned with restoAdmin adminDashboardBundle:
+  // net = paid−refund (orders-gated) + cash_reconciliation; expenses via operation_category + Manila day bounds.
   app.get("/api/analytics/admin-dashboard-bundle", async (req, res) => {
     try {
       const { start_date, end_date } = req.query.start_date
@@ -131,64 +170,131 @@ async function startServer() {
         : getCurrentMonthRange();
 
       const branchIdFilter = req.query.branch_id ? Number(req.query.branch_id) : null;
+      const billingRange = phLocalDayRangeFilter("b.ENCODED_DT", start_date, end_date);
+      const expenseRange = phLocalDayRangeFilter("e.ENCODED_DT", start_date, end_date);
+      const excludedPlaceholders = EXCLUDED_BRANCHES.map(() => "?").join(",");
 
-      // 1) Branch sales
+      // 1) Branch sales — same formula as restoAdmin pyserver branch_sales (paid − refund, orders-gated)
       let salesQuery = `
         SELECT
-          b2.IDNo as branch_id,
-          b2.BRANCH_NAME as branch_name,
-          b2.BRANCH_LOGO as branch_logo,
-          COALESCE(SUM(b.AMOUNT_PAID), 0) as total_sales,
-          COALESCE(SUM(b.REFUND), 0) as total_refund,
-          COALESCE(SUM(b.AMOUNT_PAID) - SUM(COALESCE(b.REFUND, 0)), 0) as net_sales,
-          COUNT(DISTINCT b.ORDER_ID) as order_count
-        FROM branches b2
-        LEFT JOIN billing b ON b.BRANCH_ID = b2.IDNo
+          br.IDNo as branch_id,
+          br.BRANCH_NAME as branch_name,
+          br.BRANCH_LOGO as branch_logo,
+          COALESCE(SUM(CASE WHEN o.IDNo IS NOT NULL THEN b.AMOUNT_PAID + COALESCE(o.DISCOUNT_AMOUNT, 0) ELSE 0 END), 0) as total_sales,
+          COALESCE(SUM(CASE WHEN o.IDNo IS NOT NULL THEN b.AMOUNT_PAID ELSE 0 END), 0) as amount_paid,
+          COALESCE(SUM(CASE WHEN o.IDNo IS NOT NULL THEN COALESCE(b.REFUND, 0) ELSE 0 END), 0) as refund_total,
+          COUNT(DISTINCT CASE WHEN o.IDNo IS NOT NULL THEN b.ORDER_ID END) as order_count
+        FROM branches br
+        LEFT JOIN billing b ON b.BRANCH_ID = br.IDNo
           AND b.STATUS IN (1, 2)
-          AND DATE(b.ENCODED_DT) BETWEEN ? AND ?
-        WHERE b2.ACTIVE = 1 AND b2.BRANCH_NAME NOT IN (${EXCLUDED_BRANCHES.map(() => '?').join(',')})
+          AND b.STATUS NOT IN (-1, -2)
+          ${billingRange.sql}
+        LEFT JOIN orders o ON o.IDNo = b.ORDER_ID AND o.STATUS NOT IN (-1, -2)
+        WHERE br.ACTIVE = 1
+          AND br.BRANCH_NAME NOT IN (${excludedPlaceholders})
       `;
-      const salesParams: any[] = [start_date, end_date, ...EXCLUDED_BRANCHES];
+      const salesParams: any[] = [...billingRange.params, ...EXCLUDED_BRANCHES];
       if (branchIdFilter) {
-        salesQuery += ` AND b2.IDNo = ?`;
+        salesQuery += ` AND br.IDNo = ?`;
         salesParams.push(branchIdFilter);
       }
-      salesQuery += ` GROUP BY b2.IDNo, b2.BRANCH_NAME, b2.BRANCH_LOGO ORDER BY net_sales DESC`;
+      salesQuery += ` GROUP BY br.IDNo, br.BRANCH_NAME, br.BRANCH_LOGO ORDER BY amount_paid DESC`;
 
       const [branchSales] = await pool.execute(salesQuery, salesParams);
 
-      // 2) Daily sales trend (all branches or filtered)
+      // 1b) Cash reconciliation by branch + by business date (for chart bars)
+      const reconByBranch: Record<string, number> = {};
+      const reconByDate: Record<string, number> = {};
+      try {
+        let reconQuery = `
+          SELECT
+            BRANCH_ID,
+            DATE_FORMAT(BUSINESS_DATE, '%Y-%m-%d') AS business_date,
+            COALESCE(SUM(AMOUNT), 0) AS day_total
+          FROM cash_reconciliation
+          WHERE ACTIVE = 1
+            AND BUSINESS_DATE >= ?
+            AND BUSINESS_DATE <= ?
+        `;
+        const reconParams: any[] = [start_date, end_date];
+        if (branchIdFilter) {
+          reconQuery += ` AND BRANCH_ID = ?`;
+          reconParams.push(branchIdFilter);
+        }
+        reconQuery += ` GROUP BY BRANCH_ID, DATE_FORMAT(BUSINESS_DATE, '%Y-%m-%d')`;
+        const [reconRows] = await pool.execute(reconQuery, reconParams) as any[];
+        for (const r of reconRows) {
+          const amt = Number(r.day_total) || 0;
+          const bid = String(r.BRANCH_ID);
+          const d = String(r.business_date || "").slice(0, 10);
+          reconByBranch[bid] = (reconByBranch[bid] || 0) + amt;
+          if (d) reconByDate[d] = (reconByDate[d] || 0) + amt;
+        }
+      } catch (err: any) {
+        console.warn("[admin-dashboard-bundle] cash_reconciliation unavailable:", err?.message || err);
+      }
+
+      // 2) Daily sales trend — same formula as restoAdmin /api/analytics/daily-sales:
+      //    total_sales (gross) = paid + discount; net = paid - refund
       let dailyQuery = `
         SELECT
-          DATE(b.ENCODED_DT) as sale_date,
-          COALESCE(SUM(b.AMOUNT_PAID), 0) as total_sales,
-          COALESCE(SUM(b.REFUND), 0) as total_refund
+          DATE_FORMAT(COALESCE(
+            CONVERT_TZ(b.ENCODED_DT, @@session.time_zone, '+08:00'),
+            DATE_ADD(b.ENCODED_DT, INTERVAL 8 HOUR)
+          ), '%Y-%m-%d') as sale_date,
+          COALESCE(SUM(b.AMOUNT_PAID), 0) as paid_total,
+          COALESCE(SUM(COALESCE(o.DISCOUNT_AMOUNT, 0)), 0) as discount,
+          COALESCE(SUM(COALESCE(b.REFUND, 0)), 0) as refund
         FROM billing b
+        INNER JOIN orders o ON o.IDNo = b.ORDER_ID AND o.STATUS NOT IN (-1, -2)
+        INNER JOIN branches br ON br.IDNo = b.BRANCH_ID
+          AND br.ACTIVE = 1
+          AND br.BRANCH_NAME NOT IN (${excludedPlaceholders})
         WHERE b.STATUS IN (1, 2)
-          AND DATE(b.ENCODED_DT) BETWEEN ? AND ?
+          AND b.STATUS NOT IN (-1, -2)
+          ${billingRange.sql}
       `;
-      const dailyParams: any[] = [start_date, end_date];
+      const dailyParams: any[] = [...EXCLUDED_BRANCHES, ...billingRange.params];
       if (branchIdFilter) {
         dailyQuery += ` AND b.BRANCH_ID = ?`;
         dailyParams.push(branchIdFilter);
       }
-      dailyQuery += ` GROUP BY DATE(b.ENCODED_DT) ORDER BY sale_date`;
+      dailyQuery += ` GROUP BY sale_date ORDER BY sale_date`;
 
-      const [dailySales] = await pool.execute(dailyQuery, dailyParams);
+      const [dailySalesRaw] = await pool.execute(dailyQuery, dailyParams);
+      const dailySales = (dailySalesRaw as any[]).map((r) => {
+        const paid = Number(r.paid_total) || 0;
+        const discount = Number(r.discount) || 0;
+        const refund = Number(r.refund) || 0;
+        const total_sales = paid + discount;
+        const net_sales = Math.max(0, total_sales - discount - refund);
+        return {
+          sale_date: r.sale_date,
+          total_sales,
+          total_refund: refund,
+          refund,
+          discount,
+          net_sales,
+          paid_total: paid,
+        };
+      });
 
-      // 3) Expense totals by branch (same active branches only)
+      // 3) Expense totals by branch — match restoAdmin ExpenseModel.getTotalsByBranch
       let expenseQuery = `
         SELECT
           e.BRANCH_ID as branch_id,
           COALESCE(SUM(e.EXP_AMOUNT), 0) as total_expense
         FROM expenses e
         INNER JOIN branches b2 ON b2.IDNo = e.BRANCH_ID
+        LEFT JOIN master_categories mc ON mc.ACTIVE = 1 AND mc.IDNo = e.MASTER_CAT_ID
+        INNER JOIN operation_category oc ON oc.IDNo = mc.OP_CAT_ID AND oc.ACTIVE = 1
         WHERE e.ACTIVE = 1
+          AND oc.ACTIVE = 1
           AND b2.ACTIVE = 1
-          AND b2.BRANCH_NAME NOT IN (${EXCLUDED_BRANCHES.map(() => '?').join(',')})
-          AND DATE(e.ENCODED_DT) BETWEEN ? AND ?
+          AND b2.BRANCH_NAME NOT IN (${excludedPlaceholders})
+          ${expenseRange.sql}
       `;
-      const expParams: any[] = [...EXCLUDED_BRANCHES, start_date, end_date];
+      const expParams: any[] = [...EXCLUDED_BRANCHES, ...expenseRange.params];
       if (branchIdFilter) {
         expenseQuery += ` AND e.BRANCH_ID = ?`;
         expParams.push(branchIdFilter);
@@ -197,24 +303,29 @@ async function startServer() {
 
       const [expenseRows] = await pool.execute(expenseQuery, expParams) as any[];
 
-      // 4) Expense category breakdown by branch
+      // 4) Expense category breakdown by branch (same oc + Manila filters)
       let expCatQuery = `
         SELECT
           e.BRANCH_ID as branch_id,
-          COALESCE(mc.CATEGORY_NAME, 'Others') as exp_cat,
-          COALESCE(e.EXP_DESC, 'Other') as exp_name,
+          COALESCE(oc.NAME, 'Others') as exp_cat,
+          COALESCE(mc.CATEGORY_NAME, e.EXP_DESC, 'Other') as exp_name,
           COALESCE(SUM(e.EXP_AMOUNT), 0) as total_amount
         FROM expenses e
-        LEFT JOIN master_categories mc ON e.MASTER_CAT_ID = mc.IDNo
+        LEFT JOIN master_categories mc ON mc.ACTIVE = 1 AND mc.IDNo = e.MASTER_CAT_ID
+        INNER JOIN operation_category oc ON oc.IDNo = mc.OP_CAT_ID AND oc.ACTIVE = 1
+        INNER JOIN branches b2 ON b2.IDNo = e.BRANCH_ID
         WHERE e.ACTIVE = 1
-          AND DATE(e.ENCODED_DT) BETWEEN ? AND ?
+          AND oc.ACTIVE = 1
+          AND b2.ACTIVE = 1
+          AND b2.BRANCH_NAME NOT IN (${excludedPlaceholders})
+          ${expenseRange.sql}
       `;
-      const expCatParams: any[] = [start_date, end_date];
+      const expCatParams: any[] = [...EXCLUDED_BRANCHES, ...expenseRange.params];
       if (branchIdFilter) {
         expCatQuery += ` AND e.BRANCH_ID = ?`;
         expCatParams.push(branchIdFilter);
       }
-      expCatQuery += ` GROUP BY e.BRANCH_ID, mc.CATEGORY_NAME, e.EXP_DESC`;
+      expCatQuery += ` GROUP BY e.BRANCH_ID, oc.NAME, mc.CATEGORY_NAME, e.EXP_DESC`;
 
       const [expCatRows] = await pool.execute(expCatQuery, expCatParams) as any[];
 
@@ -226,13 +337,15 @@ async function startServer() {
           SUM(oi.QTY) as total_quantity,
           SUM(oi.LINE_TOTAL) as total_revenue
         FROM order_items oi
-        JOIN orders o ON oi.ORDER_ID = o.IDNo
+        JOIN orders o ON oi.ORDER_ID = o.IDNo AND o.STATUS NOT IN (-1, -2)
+        JOIN billing b ON b.ORDER_ID = o.IDNo AND b.STATUS IN (1, 2) AND b.STATUS NOT IN (-1, -2)
         JOIN menu m ON oi.MENU_ID = m.IDNo
-        WHERE DATE(o.ENCODED_DT) BETWEEN ? AND ?
+        WHERE 1=1
+          ${billingRange.sql}
       `;
-      const topParams: any[] = [start_date, end_date];
+      const topParams: any[] = [...billingRange.params];
       if (branchIdFilter) {
-        topQuery += ` AND o.BRANCH_ID = ?`;
+        topQuery += ` AND b.BRANCH_ID = ?`;
         topParams.push(branchIdFilter);
       }
       topQuery += ` GROUP BY m.IDNo, m.MENU_NAME, m.CATEGORY_ID ORDER BY total_revenue DESC LIMIT 10`;
@@ -242,18 +355,27 @@ async function startServer() {
       // 6) Daily expenses for trend
       let dailyExpQuery = `
         SELECT
-          DATE(e.ENCODED_DT) as expense_date,
+          DATE(COALESCE(
+            CONVERT_TZ(e.ENCODED_DT, @@session.time_zone, '+08:00'),
+            DATE_ADD(e.ENCODED_DT, INTERVAL 8 HOUR)
+          )) as expense_date,
           COALESCE(SUM(e.EXP_AMOUNT), 0) as total_expense
         FROM expenses e
+        LEFT JOIN master_categories mc ON mc.ACTIVE = 1 AND mc.IDNo = e.MASTER_CAT_ID
+        INNER JOIN operation_category oc ON oc.IDNo = mc.OP_CAT_ID AND oc.ACTIVE = 1
+        INNER JOIN branches b2 ON b2.IDNo = e.BRANCH_ID
         WHERE e.ACTIVE = 1
-          AND DATE(e.ENCODED_DT) BETWEEN ? AND ?
+          AND oc.ACTIVE = 1
+          AND b2.ACTIVE = 1
+          AND b2.BRANCH_NAME NOT IN (${excludedPlaceholders})
+          ${expenseRange.sql}
       `;
-      const dailyExpParams: any[] = [start_date, end_date];
+      const dailyExpParams: any[] = [...EXCLUDED_BRANCHES, ...expenseRange.params];
       if (branchIdFilter) {
         dailyExpQuery += ` AND e.BRANCH_ID = ?`;
         dailyExpParams.push(branchIdFilter);
       }
-      dailyExpQuery += ` GROUP BY DATE(e.ENCODED_DT) ORDER BY expense_date`;
+      dailyExpQuery += ` GROUP BY expense_date ORDER BY expense_date`;
 
       const [dailyExpenses] = await pool.execute(dailyExpQuery, dailyExpParams) as any[];
 
@@ -271,36 +393,36 @@ async function startServer() {
         expenseCategoryByBranch[bid][key] = (expenseCategoryByBranch[bid][key] || 0) + Number(r.total_amount);
       }
 
-      const branchCardsData = (branchSales as any[]).map((b: any) => ({
-        id: b.branch_id,
-        name: b.branch_name,
-        logo: b.branch_logo || null,
-        totalSales: Number(b.net_sales) || 0,
-        reportSalesPos: Number(b.net_sales) || 0,
-        totalExpenses: expenseByBranch[String(b.branch_id)] || 0,
-        totalOrders: Number(b.order_count) || 0,
-        reconTotal: 0,
-      }));
+      const branchCardsData = (branchSales as any[]).map((b: any) => {
+        const paid = Number(b.amount_paid) || 0;
+        const refund = Number(b.refund_total) || 0;
+        const posBase = Math.max(0, paid - refund);
+        const reconTotal = Number(reconByBranch[String(b.branch_id)] ?? 0) || 0;
+        return {
+          id: b.branch_id,
+          name: b.branch_name,
+          logo: b.branch_logo || null,
+          totalSales: posBase + reconTotal,
+          reportSalesPos: posBase,
+          reportSalesGross: Number(b.total_sales) || 0,
+          totalExpenses: expenseByBranch[String(b.branch_id)] || 0,
+          totalOrders: Number(b.order_count) || 0,
+          reconTotal,
+        };
+      });
 
       const totalSales = branchCardsData.reduce((s: number, b: any) => s + b.totalSales, 0);
       const totalExpenses = branchCardsData.reduce((s: number, b: any) => s + b.totalExpenses, 0);
 
-      // Build daily trend data (normalize MySQL DATE → local YYYY-MM-DD)
+      // Build daily trend — restoAdmin Sales Analytics "Total sales" chart basis:
+      // gross total_sales (paid + discount) + cash recon for that business date.
       const toDateKey = (val: any): string => {
         if (val instanceof Date && !Number.isNaN(val.getTime())) {
-          const pad = (n: number) => String(n).padStart(2, "0");
-          return `${val.getFullYear()}-${pad(val.getMonth() + 1)}-${pad(val.getDate())}`;
+          // Prefer UTC parts for MySQL DATE values serialized as UTC midnight
+          return `${val.getUTCFullYear()}-${pad2(val.getUTCMonth() + 1)}-${pad2(val.getUTCDate())}`;
         }
         const s = String(val);
-        if (/^\d{4}-\d{2}-\d{2}/.test(s)) {
-          // ISO midnight UTC often shifts a day in PH — prefer local parse
-          const d = new Date(s);
-          if (!Number.isNaN(d.getTime()) && s.includes("T")) {
-            const pad = (n: number) => String(n).padStart(2, "0");
-            return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
-          }
-          return s.slice(0, 10);
-        }
+        if (/^\d{4}-\d{2}-\d{2}/.test(s)) return s.slice(0, 10);
         return s.slice(0, 10);
       };
 
@@ -308,7 +430,8 @@ async function startServer() {
       const dailyExpMap = new Map<string, number>();
       for (const r of dailySales as any[]) {
         const d = toDateKey(r.sale_date);
-        dailySalesMap.set(d, (dailySalesMap.get(d) || 0) + Number(r.total_sales) - Number(r.total_refund || 0));
+        // Chart = gross total_sales (paid + discount) — same as restoAdmin Sales Analytics Total sales bars
+        dailySalesMap.set(d, (dailySalesMap.get(d) || 0) + (Number(r.total_sales) || 0));
       }
       for (const r of dailyExpenses) {
         const d = toDateKey(r.expense_date);
@@ -325,6 +448,106 @@ async function startServer() {
           totalExpenses: dailyExpMap.get(date) || 0,
         }));
 
+      // 7) Rent / salary by branch (EXP_DESC + category hints) — same as restoAdmin getRentSalaryByBranch
+      const expenseRentByBranch: Record<string, number> = {};
+      const expenseSalaryByBranch: Record<string, number> = {};
+      try {
+        const isLaborBenefits = `(
+          LOWER(COALESCE(mc.CATEGORY_NAME, '')) LIKE '%labor%'
+          OR LOWER(COALESCE(mc.CATEGORY_NAME, '')) LIKE '%benefits%'
+          OR mc.CATEGORY_NAME LIKE '%복지%'
+          OR (mc.CATEGORY_NAME LIKE '%급여%' AND mc.CATEGORY_NAME LIKE '%복지%')
+        )`;
+        let rentSalQuery = `
+          SELECT
+            e.BRANCH_ID AS branch_id,
+            COALESCE(SUM(
+              CASE
+                WHEN (
+                  NOT ${isLaborBenefits}
+                  AND (
+                    LOWER(COALESCE(mc.CATEGORY_NAME, '')) LIKE '%rent%'
+                    OR LOWER(COALESCE(mc.CATEGORY_NAME, '')) LIKE '%rental%'
+                    OR LOWER(COALESCE(mc.CATEGORY_NAME, '')) LIKE '%lease%'
+                    OR mc.CATEGORY_NAME LIKE '%월세%'
+                    OR mc.CATEGORY_NAME LIKE '%임대%'
+                    OR (
+                      (
+                        LOWER(COALESCE(e.EXP_DESC, '')) LIKE '%rent%'
+                        OR LOWER(COALESCE(e.EXP_DESC, '')) LIKE '%rental%'
+                        OR LOWER(COALESCE(e.EXP_DESC, '')) LIKE '%lease%'
+                        OR e.EXP_DESC LIKE '%월세%'
+                        OR e.EXP_DESC LIKE '%임대%'
+                      )
+                      AND LOWER(COALESCE(e.EXP_DESC, '')) NOT LIKE '%grinder%'
+                      AND LOWER(COALESCE(e.EXP_DESC, '')) NOT LIKE '%fusion%'
+                      AND COALESCE(e.EXP_DESC, '') NOT LIKE '%그라인더%'
+                      AND NOT (
+                        COALESCE(e.EXP_DESC, '') LIKE '%대여%'
+                        AND COALESCE(e.EXP_DESC, '') NOT LIKE '%임대%'
+                      )
+                    )
+                  )
+                ) THEN e.EXP_AMOUNT
+                ELSE 0
+              END
+            ), 0) AS rent_amount,
+            COALESCE(SUM(
+              CASE
+                WHEN (
+                  ${isLaborBenefits}
+                  OR LOWER(COALESCE(mc.CATEGORY_NAME, '')) LIKE '%salary%'
+                  OR LOWER(COALESCE(mc.CATEGORY_NAME, '')) LIKE '%wage%'
+                  OR LOWER(COALESCE(mc.CATEGORY_NAME, '')) LIKE '%payroll%'
+                  OR mc.CATEGORY_NAME LIKE '%급여%'
+                  OR mc.CATEGORY_NAME LIKE '%인건%'
+                  OR mc.CATEGORY_NAME LIKE '%가불%'
+                  OR LOWER(COALESCE(mc.CATEGORY_NAME, '')) LIKE '%c.a%'
+                  OR LOWER(COALESCE(mc.CATEGORY_NAME, '')) LIKE '%cash advance%'
+                  OR LOWER(COALESCE(mc.CATEGORY_NAME, '')) LIKE '%cashadvance%'
+                  OR LOWER(COALESCE(mc.CATEGORY_NAME, '')) LIKE '%dj%'
+                  OR LOWER(COALESCE(mc.CATEGORY_NAME, '')) LIKE '%promoter%'
+                  OR (
+                    (oc.NAME LIKE '%급여 / Salary%' OR oc.NAME LIKE '%급여 / salary%' OR UPPER(TRIM(oc.NAME)) = 'SALARY')
+                    AND oc.NAME NOT LIKE '%,%'
+                  )
+                  OR LOWER(COALESCE(e.EXP_DESC, '')) LIKE '%salary%'
+                  OR LOWER(COALESCE(e.EXP_DESC, '')) LIKE '%wage%'
+                  OR LOWER(COALESCE(e.EXP_DESC, '')) LIKE '%payroll%'
+                  OR e.EXP_DESC LIKE '%급여%'
+                  OR e.EXP_DESC LIKE '%가불%'
+                  OR LOWER(COALESCE(e.EXP_DESC, '')) LIKE '%c.a%'
+                  OR LOWER(COALESCE(e.EXP_DESC, '')) LIKE '%cash advance%'
+                ) THEN e.EXP_AMOUNT
+                ELSE 0
+              END
+            ), 0) AS salary_amount
+          FROM expenses e
+          LEFT JOIN master_categories mc ON mc.ACTIVE = 1 AND mc.IDNo = e.MASTER_CAT_ID
+          INNER JOIN operation_category oc ON oc.IDNo = mc.OP_CAT_ID AND oc.ACTIVE = 1
+          INNER JOIN branches b2 ON b2.IDNo = e.BRANCH_ID
+          WHERE e.ACTIVE = 1
+            AND oc.ACTIVE = 1
+            AND b2.ACTIVE = 1
+            AND b2.BRANCH_NAME NOT IN (${excludedPlaceholders})
+            ${expenseRange.sql}
+        `;
+        const rentSalParams: any[] = [...EXCLUDED_BRANCHES, ...expenseRange.params];
+        if (branchIdFilter) {
+          rentSalQuery += ` AND e.BRANCH_ID = ?`;
+          rentSalParams.push(branchIdFilter);
+        }
+        rentSalQuery += ` GROUP BY e.BRANCH_ID`;
+        const [rentSalRows] = await pool.execute(rentSalQuery, rentSalParams) as any[];
+        for (const r of rentSalRows) {
+          const bid = String(r.branch_id);
+          expenseRentByBranch[bid] = Number(r.rent_amount) || 0;
+          expenseSalaryByBranch[bid] = Number(r.salary_amount) || 0;
+        }
+      } catch (err: any) {
+        console.warn("[admin-dashboard-bundle] rent/salary by branch failed:", err?.message || err);
+      }
+
     res.json({
         summary: { totalSales, totalExpenses, totalRevenue: totalSales - totalExpenses },
         branchCardsData,
@@ -334,8 +557,8 @@ async function startServer() {
         trendData,
         trendPeriod: "daily",
         expenseCategoryByBranch,
-        expenseRentByBranch: {},
-        expenseSalaryByBranch: {},
+        expenseRentByBranch,
+        expenseSalaryByBranch,
         branchChartsById: {},
       });
     } catch (err: any) {
@@ -569,34 +792,54 @@ async function startServer() {
     }
   });
 
-  // ─── Daily Sales ───
+  // ─── Daily Sales (restoAdmin daily-sales: gross = paid+discount, net = paid−refund) ───
   app.get("/api/analytics/daily-sales", async (req, res) => {
     try {
       const { start_date, end_date } = req.query.start_date
         ? { start_date: req.query.start_date as string, end_date: req.query.end_date as string }
         : getCurrentMonthRange();
       const branchId = req.query.branch_id ? Number(req.query.branch_id) : null;
+      const billingRange = phLocalDayRangeFilter("b.ENCODED_DT", start_date, end_date);
 
       let query = `
         SELECT
-          DATE(b.ENCODED_DT) as sale_date,
-          SUM(b.AMOUNT_PAID) as total_sales,
-          SUM(COALESCE(b.REFUND, 0)) as total_refund,
-          0 as total_discount,
-          SUM(b.AMOUNT_PAID - COALESCE(b.REFUND, 0)) as net_sales,
-          COUNT(DISTINCT b.ORDER_ID) as order_count
+          DATE_FORMAT(COALESCE(
+            CONVERT_TZ(b.ENCODED_DT, @@session.time_zone, '+08:00'),
+            DATE_ADD(b.ENCODED_DT, INTERVAL 8 HOUR)
+          ), '%Y-%m-%d') as sale_date,
+          COALESCE(SUM(b.AMOUNT_PAID), 0) as paid_total,
+          COALESCE(SUM(COALESCE(o.DISCOUNT_AMOUNT, 0)), 0) as discount,
+          COALESCE(SUM(COALESCE(b.REFUND, 0)), 0) as refund
         FROM billing b
+        INNER JOIN orders o ON o.IDNo = b.ORDER_ID AND o.STATUS NOT IN (-1, -2)
         WHERE b.STATUS IN (1, 2)
-          AND DATE(b.ENCODED_DT) BETWEEN ? AND ?
+          AND b.STATUS NOT IN (-1, -2)
+          ${billingRange.sql}
       `;
-      const params: any[] = [start_date, end_date];
+      const params: any[] = [...billingRange.params];
       if (branchId) {
         query += ` AND b.BRANCH_ID = ?`;
         params.push(branchId);
       }
-      query += ` GROUP BY DATE(b.ENCODED_DT) ORDER BY sale_date`;
+      query += ` GROUP BY sale_date ORDER BY sale_date`;
 
-      const [rows] = await pool.execute(query, params);
+      const [rawRows] = await pool.execute(query, params);
+      const rows = (rawRows as any[]).map((r) => {
+        const paid = Number(r.paid_total) || 0;
+        const discount = Number(r.discount) || 0;
+        const refund = Number(r.refund) || 0;
+        const total_sales = paid + discount;
+        const net_sales = Math.max(0, total_sales - discount - refund);
+        return {
+          sale_date: r.sale_date,
+          total_sales,
+          refund,
+          discount,
+          net_sales,
+          total_refund: refund,
+          total_discount: discount,
+        };
+      });
       res.json({ success: true, data: rows });
     } catch (err: any) {
       res.status(500).json({ error: err.message });
@@ -844,31 +1087,44 @@ async function startServer() {
     }
   });
 
-  // ─── Daily Sales Per Branch (for weakness/strength analysis) ───
+  // ─── Daily Sales Per Branch (gross total_sales basis like restoAdmin daily-per-branch) ───
   app.get("/api/analytics/daily-per-branch", async (req, res) => {
     try {
       const { start_date, end_date } = req.query.start_date
         ? { start_date: req.query.start_date as string, end_date: req.query.end_date as string }
         : getCurrentMonthRange();
 
-      const excl = EXCLUDED_BRANCHES.map(() => '?').join(',');
+      const excl = EXCLUDED_BRANCHES.map(() => "?").join(",");
+      const billingRange = phLocalDayRangeFilter("b.ENCODED_DT", start_date, end_date);
       const [rows] = await pool.execute(
         `SELECT
-          b2.IDNo as branch_id,
-          b2.BRANCH_NAME as branch_name,
-          DATE(b.ENCODED_DT) as sale_date,
-          DAYNAME(DATE(b.ENCODED_DT)) as day_name,
+          br.IDNo as branch_id,
+          br.BRANCH_NAME as branch_name,
+          DATE_FORMAT(COALESCE(
+            CONVERT_TZ(b.ENCODED_DT, @@session.time_zone, '+08:00'),
+            DATE_ADD(b.ENCODED_DT, INTERVAL 8 HOUR)
+          ), '%Y-%m-%d') as sale_date,
+          DAYNAME(COALESCE(
+            CONVERT_TZ(b.ENCODED_DT, @@session.time_zone, '+08:00'),
+            DATE_ADD(b.ENCODED_DT, INTERVAL 8 HOUR)
+          )) as day_name,
+          COALESCE(SUM(b.AMOUNT_PAID + COALESCE(o.DISCOUNT_AMOUNT, 0)), 0) as total_sales,
+          COALESCE(SUM(b.AMOUNT_PAID), 0) as amount_paid,
+          COALESCE(SUM(COALESCE(b.REFUND, 0)), 0) as refund,
+          COALESCE(SUM(COALESCE(o.DISCOUNT_AMOUNT, 0)), 0) as discount,
           COALESCE(SUM(b.AMOUNT_PAID - COALESCE(b.REFUND, 0)), 0) as net_sales,
           COUNT(DISTINCT b.ORDER_ID) as order_count
-        FROM branches b2
-        LEFT JOIN billing b ON b.BRANCH_ID = b2.IDNo
-          AND b.STATUS IN (1,2)
-          AND DATE(b.ENCODED_DT) BETWEEN ? AND ?
-        WHERE b2.ACTIVE = 1 AND b2.BRANCH_NAME NOT IN (${excl})
-        GROUP BY b2.IDNo, b2.BRANCH_NAME, DATE(b.ENCODED_DT)
+        FROM branches br
+        LEFT JOIN billing b ON b.BRANCH_ID = br.IDNo
+          AND b.STATUS IN (1, 2)
+          AND b.STATUS NOT IN (-1, -2)
+          ${billingRange.sql}
+        LEFT JOIN orders o ON o.IDNo = b.ORDER_ID AND o.STATUS NOT IN (-1, -2)
+        WHERE br.ACTIVE = 1 AND br.BRANCH_NAME NOT IN (${excl})
+        GROUP BY br.IDNo, br.BRANCH_NAME, sale_date, day_name
         HAVING sale_date IS NOT NULL
-        ORDER BY b2.BRANCH_NAME, sale_date`,
-        [start_date, end_date, ...EXCLUDED_BRANCHES]
+        ORDER BY br.BRANCH_NAME, sale_date`,
+        [...billingRange.params, ...EXCLUDED_BRANCHES]
       );
       res.json({ success: true, data: rows });
     } catch (err: any) {

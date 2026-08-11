@@ -1,4 +1,4 @@
-﻿import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   Building2, ChevronDown, ChevronLeft, ChevronRight, Loader2, AlertCircle, ShoppingBag, X, Columns2
 } from 'lucide-react';
@@ -698,7 +698,7 @@ export const SalesAnalytics: React.FC = () => {
             label="Sales"
             value={formatFullPeso(cSales)}
             valueFull={formatFullPeso(cSales)}
-            sub={`${formatFullPeso(Math.round(cSales / daysCount))} daily sales average`}
+            sub={`${formatFullPeso(cSales / daysCount)} daily sales average`}
             color="indigo"
             size="hero"
           />
