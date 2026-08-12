@@ -31,9 +31,13 @@ export const AIAdvisorModal: React.FC<Props> = ({ isOpen, onClose }) => {
     setResponse(null);
 
     try {
+      const token = localStorage.getItem('token') || '';
       const res = await fetch('/api/ai-insights', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
         body: JSON.stringify({
           question: promptText,
           branchData: MOCK_BRANCH_COMPARISON.map((b) => ({

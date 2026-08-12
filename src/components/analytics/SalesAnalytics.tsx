@@ -21,7 +21,6 @@ const nowInit = new Date();
 const MONTH_SHORT = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'] as const;
 
 const DAY_ORDER = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'] as const;
-const DAY_LETTER = ['S', 'M', 'T', 'W', 'THU', 'F', 'S'] as const;
 
 /** Dense day labels on one line — compact so 1–31 all fit. */
 function DayAxisTick({
@@ -436,7 +435,6 @@ export const SalesAnalytics: React.FC = () => {
     const date = toDateKey(d);
     return {
       name,
-      letter: DAY_LETTER[i],
       date,
       dayNum: d.getDate(),
       isToday: date === todayKey(),
@@ -980,17 +978,17 @@ export const SalesAnalytics: React.FC = () => {
                   ))}
                 </colgroup>
                 <thead>
-                  <tr className="bg-slate-50 dark:bg-slate-800 text-slate-500 font-bold text-[9px] sm:text-[10px] tracking-wide">
+                  <tr className="bg-slate-50 dark:bg-slate-800 text-slate-500 font-bold text-[11px] sm:text-xs tracking-wide">
                     <th className="px-1.5 sm:px-2 py-2 text-left uppercase">Branch</th>
                     {weekColumns.map(c => (
                       <th
                         key={c.date}
-                        className={`px-0.5 py-1.5 text-center font-bold ${
+                        className={`px-0.5 py-2 text-center font-bold ${
                           c.isToday ? 'text-indigo-500 dark:text-indigo-300' : c.isFuture ? 'text-slate-600' : ''
                         }`}
                       >
-                        <div className="uppercase">{c.letter}</div>
-                        <div className={`text-[9px] font-semibold tabular-nums normal-case ${
+                        <div className="leading-tight">{c.name}</div>
+                        <div className={`text-[11px] sm:text-xs font-semibold tabular-nums mt-0.5 ${
                           c.isToday ? 'text-indigo-400' : 'text-slate-500'
                         }`}>{c.dayNum}</div>
                       </th>

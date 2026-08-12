@@ -1,12 +1,98 @@
-import express from "express";
+import express, { type Request, type Response, type NextFunction } from "express";
 import fs from "fs";
 import path from "path";
+import crypto from "crypto";
 import { createServer as createViteServer } from "vite";
 import { GoogleGenAI } from "@google/genai";
 import dotenv from "dotenv";
 import mysql from "mysql2/promise";
+import argon2 from "argon2";
+import jwt from "jsonwebtoken";
 
 dotenv.config();
+
+const JWT_SECRET = process.env.JWT_SECRET || "your_jwt_secret_key_change_in_production";
+const JWT_EXPIRES_IN = process.env.JWT_EXPIRES_IN || "24h";
+
+type AuthUser = {
+  user_id: string | number;
+  username: string;
+  permissions: number;
+  firstname?: string | null;
+  lastname?: string | null;
+  branch_id?: string | number | null;
+  branch_name?: string | null;
+  branch_code?: string | null;
+};
+
+type AuthedRequest = Request & { user?: AuthUser };
+
+function isArgonHash(hash: unknown): hash is string {
+  return typeof hash === "string" && hash.startsWith("$argon2");
+}
+
+function generateMD5(input: string) {
+  return crypto.createHash("md5").update(input).digest("hex");
+}
+
+function generateAccessToken(payload: AuthUser) {
+  return jwt.sign(
+    {
+      user_id: payload.user_id,
+      username: payload.username,
+      permissions: payload.permissions,
+      firstname: payload.firstname || null,
+      lastname: payload.lastname || null,
+      branch_id: payload.branch_id || null,
+      branch_name: payload.branch_name || null,
+      branch_code: payload.branch_code || null,
+      type: "access",
+    },
+    JWT_SECRET,
+    {
+      expiresIn: JWT_EXPIRES_IN,
+      issuer: "resto-analytics",
+      audience: "resto-analytics-app",
+    } as jwt.SignOptions
+  );
+}
+
+function verifyAccessToken(token: string): AuthUser {
+  const decoded = jwt.verify(token, JWT_SECRET, {
+    issuer: "resto-analytics",
+    audience: "resto-analytics-app",
+  }) as jwt.JwtPayload;
+  return {
+    user_id: decoded.user_id,
+    username: decoded.username || "",
+    permissions: Number(decoded.permissions),
+    firstname: decoded.firstname ?? null,
+    lastname: decoded.lastname ?? null,
+    branch_id: decoded.branch_id ?? null,
+    branch_name: decoded.branch_name ?? null,
+    branch_code: decoded.branch_code ?? null,
+  };
+}
+
+function getBearerToken(req: Request): string | null {
+  const header = req.headers.authorization || "";
+  if (!header.startsWith("Bearer ")) return null;
+  const token = header.slice(7).trim();
+  return token || null;
+}
+
+function requireAuth(req: AuthedRequest, res: Response, next: NextFunction) {
+  const token = getBearerToken(req);
+  if (!token) {
+    return res.status(401).json({ success: false, error: "Authentication required" });
+  }
+  try {
+    req.user = verifyAccessToken(token);
+    return next();
+  } catch {
+    return res.status(401).json({ success: false, error: "Invalid or expired token" });
+  }
+}
 
 function resolveUploadsDir(): string | null {
   const candidates = [
@@ -145,6 +231,139 @@ async function startServer() {
       res.json({ status: "ok", db: "disconnected", timestamp: new Date().toISOString() });
     }
   });
+
+  // ─── Auth (same user_info flow as restoAdmin) ───
+  app.post("/api/login", async (req, res) => {
+    const { username, password } = req.body || {};
+    if (!username || !password) {
+      return res.status(400).json({ success: false, error: "Username and password are required" });
+    }
+
+    if (String(username).trim().toLowerCase() !== "admin") {
+      return res.status(403).json({
+        success: false,
+        error: "Only the admin account can access Resto Analytics.",
+      });
+    }
+
+    try {
+      const [rows] = await pool.execute(
+        "SELECT * FROM user_info WHERE USERNAME = ? AND ACTIVE = 1 LIMIT 1",
+        [String(username).trim()]
+      );
+      const user = (rows as any[])[0];
+      if (!user) {
+        return res.status(401).json({ success: false, error: "User not found or inactive" });
+      }
+
+      const storedPassword = user.PASSWORD;
+      const salt = user.SALT || "";
+      let isValid = false;
+      let isLegacy = false;
+
+      if (isArgonHash(storedPassword)) {
+        isValid = await argon2.verify(storedPassword, String(password));
+      } else {
+        isValid = generateMD5(salt + String(password)) === storedPassword;
+        isLegacy = true;
+      }
+
+      if (!isValid) {
+        return res.status(401).json({ success: false, error: "Incorrect password" });
+      }
+
+      if (Number(user.PERMISSIONS) === 2) {
+        return res.status(401).json({
+          success: false,
+          error: "This account is for tablet app only. Please use the tablet application to login.",
+        });
+      }
+
+      if (isLegacy) {
+        const newHash = await argon2.hash(String(password));
+        await pool.execute("UPDATE user_info SET PASSWORD = ?, SALT = '' WHERE IDNo = ?", [newHash, user.IDNo]);
+      }
+
+      let branchId: number | null = null;
+      let branchName: string | null = null;
+      let branchCode: string | null = null;
+      let availableBranches: any[] = [];
+
+      if (Number(user.PERMISSIONS) === 1) {
+        const placeholders = EXCLUDED_BRANCHES.map(() => "?").join(",");
+        const [branchRows] = await pool.execute(
+          `SELECT IDNo, BRANCH_CODE, BRANCH_NAME, BRANCH_LOGO, ACTIVE
+           FROM branches
+           WHERE ACTIVE = 1 AND BRANCH_NAME NOT IN (${placeholders})
+           ORDER BY BRANCH_NAME ASC`,
+          EXCLUDED_BRANCHES
+        );
+        availableBranches = branchRows as any[];
+      } else {
+        const [branchRows] = await pool.execute(
+          `SELECT b.IDNo, b.BRANCH_CODE, b.BRANCH_NAME, b.BRANCH_LOGO, b.ACTIVE
+           FROM user_info u
+           INNER JOIN branches b ON b.IDNo = u.BRANCH_ID
+           WHERE u.IDNo = ? AND b.ACTIVE = 1
+           LIMIT 1`,
+          [user.IDNo]
+        );
+        const branches = branchRows as any[];
+        if (branches.length !== 1) {
+          return res.status(401).json({
+            success: false,
+            error: "This account is not assigned to a branch yet. Please contact admin.",
+          });
+        }
+        branchId = branches[0].IDNo;
+        branchName = branches[0].BRANCH_NAME;
+        branchCode = branches[0].BRANCH_CODE;
+      }
+
+      const sessionUser: AuthUser = {
+        user_id: user.IDNo,
+        username: user.USERNAME,
+        firstname: user.FIRSTNAME || null,
+        lastname: user.LASTNAME || null,
+        permissions: Number(user.PERMISSIONS),
+        branch_id: branchId,
+        branch_name: branchName,
+        branch_code: branchCode,
+      };
+
+      const accessToken = generateAccessToken(sessionUser);
+      return res.json({
+        success: true,
+        data: {
+          ...sessionUser,
+          available_branches: availableBranches,
+        },
+        tokens: {
+          accessToken,
+          expiresIn: JWT_EXPIRES_IN,
+        },
+      });
+    } catch (error: any) {
+      console.error("Login error:", error);
+      return res.status(500).json({ success: false, error: "Internal server error" });
+    }
+  });
+
+  app.get("/api/me", (req, res) => {
+    const token = getBearerToken(req);
+    if (!token) {
+      return res.json({ success: true, data: null });
+    }
+    try {
+      const user = verifyAccessToken(token);
+      return res.json({ success: true, data: user });
+    } catch {
+      return res.json({ success: true, data: null });
+    }
+  });
+
+  // Protect remaining /api routes (health / login / me registered above)
+  app.use("/api", requireAuth);
 
   // ─── Branches ───
   app.get("/api/branches", async (_req, res) => {

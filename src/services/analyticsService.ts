@@ -63,10 +63,27 @@ const BRANCH_COLORS = ['#6366f1', '#10b981', '#f59e0b', '#ec4899', '#8b5cf6', '#
 
 // ─── API Layer ───
 
+function getAuthHeaders(): Record<string, string> {
+  try {
+    const token = (localStorage.getItem('token') || '').trim();
+    return token ? { Authorization: `Bearer ${token}` } : {};
+  } catch {
+    return {};
+  }
+}
+
 async function apiFetch<T>(path: string, params: Record<string, string> = {}): Promise<T | null> {
   try {
     const qs = new URLSearchParams(params).toString();
-    const res = await fetch(`/api${path}${qs ? `?${qs}` : ''}`);
+    const res = await fetch(`/api${path}${qs ? `?${qs}` : ''}`, {
+      headers: getAuthHeaders(),
+    });
+    if (res.status === 401) {
+      localStorage.removeItem('token');
+      localStorage.removeItem('user');
+      if (typeof window !== 'undefined') window.location.replace('/');
+      return null;
+    }
     if (!res.ok) return null;
     return await res.json();
   } catch {
