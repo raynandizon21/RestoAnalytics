@@ -13,6 +13,9 @@ dotenv.config();
 
 const JWT_SECRET = process.env.JWT_SECRET || "your_jwt_secret_key_change_in_production";
 const JWT_EXPIRES_IN = process.env.JWT_EXPIRES_IN || "24h";
+const TELEGRAM_MINIAPP_SECRET = (
+  process.env.TELEGRAM_MINIAPP_SECRET || "resto-mobile-tg-sso-2026"
+).trim();
 
 type AuthUser = {
   user_id: string | number;
@@ -79,6 +82,103 @@ function getBearerToken(req: Request): string | null {
   if (!header.startsWith("Bearer ")) return null;
   const token = header.slice(7).trim();
   return token || null;
+}
+
+/** Validate Telegram Mini App initData (HMAC) using bot token. */
+function validateTelegramWebAppInitData(initData: string, botToken: string, maxAgeSec = 86400 * 2): boolean {
+  try {
+    const params = new URLSearchParams(String(initData || ""));
+    const hash = params.get("hash");
+    if (!hash || !botToken) return false;
+    params.delete("hash");
+
+    const dataCheckString = [...params.entries()]
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([k, v]) => `${k}=${v}`)
+      .join("\n");
+
+    const secretKey = crypto.createHmac("sha256", "WebAppData").update(botToken).digest();
+    const calculated = crypto.createHmac("sha256", secretKey).update(dataCheckString).digest("hex");
+    if (calculated !== hash) return false;
+
+    const authDate = Number(params.get("auth_date") || 0);
+    if (!Number.isFinite(authDate) || authDate <= 0) return false;
+    const age = Math.floor(Date.now() / 1000) - authDate;
+    if (age < -60 || age > maxAgeSec) return false;
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** Validate signed Mini App URL params from restoAdmin keyboard button. */
+function validateTelegramBypassSig(tgT: unknown, tgSig: unknown, maxAgeSec = 86400 * 2): boolean {
+  try {
+    const ts = Number(tgT);
+    const sig = String(tgSig || "").trim().toLowerCase();
+    if (!Number.isFinite(ts) || ts <= 0 || !/^[a-f0-9]{64}$/.test(sig)) return false;
+    const age = Math.floor(Date.now() / 1000) - ts;
+    if (age < -120 || age > maxAgeSec) return false;
+    const expected = crypto
+      .createHmac("sha256", TELEGRAM_MINIAPP_SECRET)
+      .update(`branch-comparison:${ts}`)
+      .digest("hex");
+    const a = Buffer.from(expected, "hex");
+    const b = Buffer.from(sig, "hex");
+    if (a.length !== b.length) return false;
+    return crypto.timingSafeEqual(a, b);
+  } catch {
+    return false;
+  }
+}
+
+async function getTelegramBotToken(): Promise<string | null> {
+  const fromEnv = String(process.env.TELEGRAM_BOT_TOKEN || "").trim();
+  if (fromEnv) return fromEnv;
+  try {
+    const [rows] = await pool.execute(
+      `SELECT BOT_TOKEN FROM telegram_settings WHERE ID = 1 LIMIT 1`
+    );
+    const token = String((rows as any[])[0]?.BOT_TOKEN || "").trim();
+    return token || null;
+  } catch {
+    return null;
+  }
+}
+
+async function buildAdminSessionPayload(): Promise<{
+  sessionUser: AuthUser;
+  availableBranches: any[];
+} | null> {
+  const [rows] = await pool.execute(
+    "SELECT * FROM user_info WHERE USERNAME = ? AND ACTIVE = 1 LIMIT 1",
+    ["admin"]
+  );
+  const user = (rows as any[])[0];
+  if (!user) return null;
+
+  const placeholders = EXCLUDED_BRANCHES.map(() => "?").join(",");
+  const [branchRows] = await pool.execute(
+    `SELECT IDNo, BRANCH_CODE, BRANCH_NAME, BRANCH_LOGO, ACTIVE
+     FROM branches
+     WHERE ACTIVE = 1 AND BRANCH_NAME NOT IN (${placeholders})
+     ORDER BY BRANCH_NAME ASC`,
+    EXCLUDED_BRANCHES
+  );
+
+  return {
+    sessionUser: {
+      user_id: user.IDNo,
+      username: user.USERNAME,
+      firstname: user.FIRSTNAME || null,
+      lastname: user.LASTNAME || null,
+      permissions: Number(user.PERMISSIONS) || 1,
+      branch_id: null,
+      branch_name: null,
+      branch_code: null,
+    },
+    availableBranches: branchRows as any[],
+  };
 }
 
 function requireAuth(req: AuthedRequest, res: Response, next: NextFunction) {
@@ -362,7 +462,58 @@ async function startServer() {
     }
   });
 
-  // Protect remaining /api routes (health / login / me registered above)
+  // ─── Telegram Mini App SSO (skip password login) ───
+  app.post("/api/telegram-auth", async (req, res) => {
+    try {
+      const initData = String(req.body?.initData || "").trim();
+      const tgT = req.body?.tg_t;
+      const tgSig = req.body?.tg_sig;
+
+      let ok = false;
+      if (validateTelegramBypassSig(tgT, tgSig)) {
+        ok = true;
+      } else if (initData) {
+        const botToken = await getTelegramBotToken();
+        if (!botToken) {
+          return res.status(503).json({ success: false, error: "Telegram bot token is not configured" });
+        }
+        ok = validateTelegramWebAppInitData(initData, botToken);
+      } else {
+        return res.status(400).json({
+          success: false,
+          error: "Telegram session params are required",
+        });
+      }
+
+      if (!ok) {
+        return res.status(401).json({ success: false, error: "Invalid Telegram session" });
+      }
+
+      const session = await buildAdminSessionPayload();
+      if (!session) {
+        return res.status(500).json({ success: false, error: "Admin account not found" });
+      }
+
+      const accessToken = generateAccessToken(session.sessionUser);
+      return res.json({
+        success: true,
+        data: {
+          ...session.sessionUser,
+          available_branches: session.availableBranches,
+          via: "telegram",
+        },
+        tokens: {
+          accessToken,
+          expiresIn: JWT_EXPIRES_IN,
+        },
+      });
+    } catch (error: any) {
+      console.error("Telegram auth error:", error);
+      return res.status(500).json({ success: false, error: "Internal server error" });
+    }
+  });
+
+  // Protect remaining /api routes (health / login / me / telegram-auth registered above)
   app.use("/api", requireAuth);
 
   // ─── Branches ───

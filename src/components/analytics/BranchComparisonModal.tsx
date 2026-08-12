@@ -1,6 +1,6 @@
 import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import {
-  Calendar, ChevronLeft, ChevronRight, Home,
+  Calendar, ChevronDown, ChevronLeft, ChevronRight, Home,
   Info, Loader2, TrendingDown, TrendingUp,
 } from 'lucide-react';
 import {
@@ -566,11 +566,22 @@ export const BranchComparisonModal: React.FC<Props> = ({ open, onClose, initialR
             className={`relative flex flex-col bg-white dark:bg-slate-900 overflow-hidden ${
               desktopFit
                 ? 'w-[min(1600px,96vw)] h-[min(960px,94dvh)] max-h-[94dvh] rounded-2xl border border-slate-200 dark:border-slate-700 shadow-2xl'
-                : 'w-screen max-w-[100vw] h-[100dvh] max-h-[100dvh] rounded-none border-0 shadow-none pt-[env(safe-area-inset-top)] pb-[env(safe-area-inset-bottom)]'
+                : 'w-screen max-w-[100vw] h-[100dvh] max-h-[100dvh] rounded-none border-0 shadow-none'
             }`}
+            style={
+              desktopFit
+                ? undefined
+                : ({
+                    // Clear Telegram Close / ⋯ chrome + iOS notch.
+                    paddingTop:
+                      'max(0.5rem, env(safe-area-inset-top, 0px), var(--tg-content-safe-area-inset-top, 3.25rem), var(--tg-safe-area-inset-top, 0px))',
+                    paddingBottom:
+                      'max(0.35rem, env(safe-area-inset-bottom, 0px), var(--tg-content-safe-area-inset-bottom, 0px), var(--tg-safe-area-inset-bottom, 0px))',
+                  } as React.CSSProperties)
+            }
             onClick={(e) => e.stopPropagation()}
           >
-            {/* Desktop: top bar. Mobile: month picker top-left only. */}
+            {/* Desktop: top bar. Mobile: reserved toolbar so date isn't under Telegram Close. */}
             {desktopFit ? (
               <div className="shrink-0 px-2 sm:px-3 md:px-4 py-1.5 md:py-2 border-b border-slate-200 dark:border-slate-800">
                 <div className="flex items-center justify-end gap-1.5 min-w-0">
@@ -580,7 +591,7 @@ export const BranchComparisonModal: React.FC<Props> = ({ open, onClose, initialR
             ) : (
               <div
                 ref={pickerRef}
-                className="absolute top-[max(0.5rem,env(safe-area-inset-top))] left-2 z-[80]"
+                className="shrink-0 relative z-[80] flex items-center justify-center px-3 py-2 border-b border-slate-200/10 dark:border-slate-700/60 bg-white dark:bg-slate-900"
               >
                 <button
                   type="button"
@@ -589,16 +600,17 @@ export const BranchComparisonModal: React.FC<Props> = ({ open, onClose, initialR
                     setPickerYear(d.getFullYear());
                     setMonthPickerOpen((o) => !o);
                   }}
-                  className="inline-flex items-center gap-1 px-2.5 py-2 rounded-xl bg-slate-900/90 border border-slate-700 text-slate-300 shadow-lg active:scale-95"
+                  className="inline-flex items-center gap-1.5 px-3 py-2 rounded-xl bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-600 text-slate-700 dark:text-slate-200 shadow-sm active:scale-95"
                   title="Multi-Branch Board"
                   aria-label={`Multi-Branch Board, ${monthLabel}`}
                   aria-expanded={monthPickerOpen}
                 >
                   <Calendar className="w-3.5 h-3.5 text-sky-400 shrink-0" />
-                  <span className="text-[11px] font-semibold tabular-nums text-slate-200">{mobileMonthLabel}</span>
+                  <span className="text-xs font-semibold tabular-nums">{mobileMonthLabel}</span>
+                  <ChevronDown className={`w-3.5 h-3.5 text-slate-400 transition-transform ${monthPickerOpen ? 'rotate-180' : ''}`} />
                 </button>
                 {monthPickerOpen && (
-                  <div className="absolute left-0 top-full mt-1.5 z-50 w-[min(16rem,70vw)] rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 shadow-xl p-3">
+                  <div className="absolute left-1/2 -translate-x-1/2 top-full mt-1.5 z-50 w-[min(16rem,70vw)] rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 shadow-xl p-3">
                     <div className="flex items-center justify-between mb-2">
                       <button type="button" onClick={() => setPickerYear((y) => y - 1)} className="p-1.5 rounded-md text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800" aria-label="Previous year">
                         <ChevronLeft className="w-4 h-4" />
@@ -637,30 +649,15 @@ export const BranchComparisonModal: React.FC<Props> = ({ open, onClose, initialR
               </div>
             )}
 
-            {/* Mobile: Back to Home — bottom, compact width (icon + label only) */}
-            {!desktopFit && (
-              <div className="absolute bottom-0 inset-x-0 z-[80] px-3 pt-2 pb-[max(0.75rem,env(safe-area-inset-bottom))] pointer-events-none flex justify-center">
-                <button
-                  type="button"
-                  onClick={onClose}
-                  className="pointer-events-auto inline-flex w-auto items-center justify-center gap-1.5 px-3 py-2.5 landscape:py-2 rounded-xl bg-indigo-600 text-white font-semibold text-sm shadow-sm hover:bg-indigo-500 active:scale-[0.99] transition"
-                  aria-label="Back to Home"
-                >
-                  <Home className="w-4 h-4 text-white/80 shrink-0" />
-                  <span className="whitespace-nowrap">Back to Home</span>
-                </button>
-              </div>
-            )}
-
-            {/* Table — desktop: scale-to-fit; mobile portrait: stretch; mobile landscape: scroll */}
+            {/* Table — desktop: scale-to-fit; mobile: scrolls between reserved chrome */}
             <div
               ref={fitWrapRef}
               className={`flex-1 min-h-0 overscroll-contain [-webkit-overflow-scrolling:touch] ${
                 desktopFit
                   ? 'overflow-hidden flex items-center justify-center'
                   : mobileNeedsScroll
-                    ? 'overflow-y-auto overflow-x-auto pb-[calc(4.25rem+env(safe-area-inset-bottom))]'
-                    : 'overflow-hidden pb-[calc(4.25rem+env(safe-area-inset-bottom))]'
+                    ? 'overflow-y-auto overflow-x-auto'
+                    : 'overflow-hidden'
               }`}
             >
               {loading ? (
@@ -894,15 +891,30 @@ export const BranchComparisonModal: React.FC<Props> = ({ open, onClose, initialR
                         })}
                       </tr>
                     ))}
-                    {/* Spacer so last Main Expenses row isn't flush under mobile home indicator */}
+                    {/* Spacer so last Main Expenses row isn't flush under footer */}
                     <tr aria-hidden className="md:hidden">
-                      <td colSpan={colCount + 1} className="h-3 border-0 p-0" />
+                      <td colSpan={colCount + 1} className="h-2 border-0 p-0" />
                     </tr>
                   </tbody>
                 </table>
                 </div>
               )}
             </div>
+
+            {/* Mobile: reserved footer — never covers table rows */}
+            {!desktopFit && (
+              <div className="shrink-0 z-[80] flex justify-center px-3 py-2 border-t border-slate-200/10 dark:border-slate-700/60 bg-white dark:bg-slate-900">
+                <button
+                  type="button"
+                  onClick={onClose}
+                  className="inline-flex w-auto items-center justify-center gap-1.5 px-3 py-2 rounded-xl bg-indigo-600 text-white font-semibold text-sm shadow-sm hover:bg-indigo-500 active:scale-[0.99] transition"
+                  aria-label="Back to Home"
+                >
+                  <Home className="w-4 h-4 text-white/80 shrink-0" />
+                  <span className="whitespace-nowrap">Back to Home</span>
+                </button>
+              </div>
+            )}
           </div>
         </div>
 

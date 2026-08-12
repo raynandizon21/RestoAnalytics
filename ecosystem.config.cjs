@@ -19,6 +19,7 @@ module.exports = {
       env: {
         NODE_ENV: 'production',
         PORT: 2998,
+        TELEGRAM_MINIAPP_SECRET: 'resto-mobile-tg-sso-2026',
       },
       out_file: './logs/out.log',
       error_file: './logs/err.log',

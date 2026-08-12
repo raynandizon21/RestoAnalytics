@@ -19,20 +19,13 @@ export const Navbar: React.FC<NavbarProps> = ({
       <div className="w-full px-3 sm:px-6 h-12 sm:h-14 flex items-center justify-between gap-2">
         <div className="flex items-center space-x-2 select-none min-w-0">
           <img
-            src="/company_logo_nobg.png"
-            alt="3Core"
-            className="w-8 h-8 sm:w-9 sm:h-9 object-contain shrink-0"
+            src="/core123.png"
+            alt="Core System"
+            className="h-8 sm:h-9 w-auto object-contain shrink-0"
           />
-          <div className="min-w-0">
-            <div className="flex items-center space-x-1.5 min-w-0">
-              <span className="font-bold text-slate-900 dark:text-white text-sm sm:text-base tracking-tight shrink-0">
-                3Core
-              </span>
-              <span className="px-1.5 py-0.5 rounded-md bg-indigo-50 dark:bg-indigo-950 text-indigo-600 dark:text-indigo-400 font-bold text-[10px] truncate">
-                Multi-Branch P&L
-              </span>
-            </div>
-          </div>
+          <span className="px-1.5 py-0.5 rounded-md bg-indigo-50 dark:bg-indigo-950 text-indigo-600 dark:text-indigo-400 font-bold text-[10px] truncate">
+            Multi-Branch P&L
+          </span>
         </div>
 
         <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
