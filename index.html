@@ -4,6 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
     <title>3Core Analytics</title>
+    <script src="https://telegram.org/js/telegram-web-app.js"></script>
     <script>
       (function () {
         try {
@@ -11,6 +12,24 @@
           var dark = t !== 'light';
           document.documentElement.classList.toggle('dark', dark);
         } catch (e) {}
+
+        // Expand Mini App immediately (before React) so mobile opens near full-screen.
+        try {
+          var tg = window.Telegram && window.Telegram.WebApp;
+          if (!tg) return;
+          tg.ready();
+          tg.expand();
+          try {
+            tg.setHeaderColor('#020617');
+            tg.setBackgroundColor('#020617');
+          } catch (e2) {}
+          // Bot API 8.0+: true device fullscreen when supported.
+          if (typeof tg.requestFullscreen === 'function') {
+            try {
+              tg.requestFullscreen();
+            } catch (e3) {}
+          }
+        } catch (e4) {}
       })();
     </script>
   </head>
@@ -19,4 +38,3 @@
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>
-

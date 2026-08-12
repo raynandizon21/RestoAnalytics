@@ -1,7 +1,7 @@
 import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import {
-  Calendar, ChevronLeft, ChevronRight,
-  Info, Loader2, TrendingDown, TrendingUp, X,
+  Calendar, ChevronLeft, ChevronRight, Home,
+  Info, Loader2, TrendingDown, TrendingUp,
 } from 'lucide-react';
 import {
   fetchBranchComparisonBoard, formatFullPeso, formatPeso, getCurrentMonthRange, getMonthRange,
@@ -540,14 +540,15 @@ export const BranchComparisonModal: React.FC<Props> = ({ open, onClose, initialR
       <button
         type="button"
         onClick={onClose}
-        className={`rounded-full text-slate-400 hover:text-slate-700 dark:hover:text-white shrink-0 transition ${
+        className={`inline-flex items-center gap-1.5 shrink-0 font-semibold text-white bg-indigo-600 hover:bg-indigo-500 active:scale-[0.98] transition shadow-sm ${
           desktopFit
-            ? 'p-2 bg-slate-100 dark:bg-slate-800'
-            : 'p-1 bg-slate-800 border border-slate-600/80 active:scale-95'
+            ? 'px-3 py-2 rounded-lg text-sm'
+            : 'px-2.5 py-1.5 rounded-xl text-[11px]'
         }`}
-        aria-label="Close"
+        aria-label="Back to Home"
       >
-        <X className={desktopFit ? 'w-4 h-4' : 'w-3.5 h-3.5'} />
+        <Home className={desktopFit ? 'w-4 h-4' : 'w-3.5 h-3.5'} />
+        <span>Back to Home</span>
       </button>
     </div>
   );
@@ -569,7 +570,7 @@ export const BranchComparisonModal: React.FC<Props> = ({ open, onClose, initialR
             }`}
             onClick={(e) => e.stopPropagation()}
           >
-            {/* Desktop: top-right bar. Mobile: date + X as matching overlays. */}
+            {/* Desktop: top bar. Mobile: month picker top-left only. */}
             {desktopFit ? (
               <div className="shrink-0 px-2 sm:px-3 md:px-4 py-1.5 md:py-2 border-b border-slate-200 dark:border-slate-800">
                 <div className="flex items-center justify-end gap-1.5 min-w-0">
@@ -577,73 +578,78 @@ export const BranchComparisonModal: React.FC<Props> = ({ open, onClose, initialR
                 </div>
               </div>
             ) : (
-              <>
-                <div
-                  ref={pickerRef}
-                  className="absolute top-[max(0.5rem,env(safe-area-inset-top))] left-2 z-[80]"
+              <div
+                ref={pickerRef}
+                className="absolute top-[max(0.5rem,env(safe-area-inset-top))] left-2 z-[80]"
+              >
+                <button
+                  type="button"
+                  onClick={() => {
+                    const d = new Date(`${range.start_date}T12:00:00`);
+                    setPickerYear(d.getFullYear());
+                    setMonthPickerOpen((o) => !o);
+                  }}
+                  className="inline-flex items-center gap-1 px-2.5 py-2 rounded-xl bg-slate-900/90 border border-slate-700 text-slate-300 shadow-lg active:scale-95"
+                  title="Multi-Branch Board"
+                  aria-label={`Multi-Branch Board, ${monthLabel}`}
+                  aria-expanded={monthPickerOpen}
                 >
-                  <button
-                    type="button"
-                    onClick={() => {
-                      const d = new Date(`${range.start_date}T12:00:00`);
-                      setPickerYear(d.getFullYear());
-                      setMonthPickerOpen((o) => !o);
-                    }}
-                    className="inline-flex items-center gap-1 px-2.5 py-2 rounded-full bg-slate-900/90 border border-slate-700 text-slate-300 shadow-lg active:scale-95"
-                    title="Multi-Branch Board"
-                    aria-label={`Multi-Branch Board, ${monthLabel}`}
-                    aria-expanded={monthPickerOpen}
-                  >
-                    <Calendar className="w-3.5 h-3.5 text-sky-400 shrink-0" />
-                    <span className="text-[11px] font-semibold tabular-nums text-slate-200">{mobileMonthLabel}</span>
-                  </button>
-                  {monthPickerOpen && (
-                    <div className="absolute left-0 top-full mt-1.5 z-50 w-[min(16rem,70vw)] rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 shadow-xl p-3">
-                      <div className="flex items-center justify-between mb-2">
-                        <button type="button" onClick={() => setPickerYear((y) => y - 1)} className="p-1.5 rounded-md text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800" aria-label="Previous year">
-                          <ChevronLeft className="w-4 h-4" />
-                        </button>
-                        <span className="text-sm font-bold text-slate-900 dark:text-white tabular-nums">{pickerYear}</span>
-                        <button type="button" onClick={() => setPickerYear((y) => Math.min(maxYear, y + 1))} disabled={pickerYear >= maxYear} className="p-1.5 rounded-md text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800 disabled:opacity-30" aria-label="Next year">
-                          <ChevronRight className="w-4 h-4" />
-                        </button>
-                      </div>
-                      <div className="grid grid-cols-3 gap-1">
-                        {MONTH_SHORT.map((m, i) => {
-                          const start = new Date(`${range.start_date}T12:00:00`);
-                          const selected = start.getFullYear() === pickerYear && start.getMonth() === i;
-                          const disabled = isMonthDisabled(pickerYear, i);
-                          return (
-                            <button
-                              key={m}
-                              type="button"
-                              disabled={disabled}
-                              onClick={() => pickMonth(pickerYear, i)}
-                              className={`py-2.5 rounded-lg text-xs font-bold ${
-                                selected
-                                  ? 'bg-indigo-600 text-white'
-                                  : disabled
-                                    ? 'text-slate-300 dark:text-slate-600'
-                                    : 'text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800'
-                              }`}
-                            >
-                              {m}
-                            </button>
-                          );
-                        })}
-                      </div>
+                  <Calendar className="w-3.5 h-3.5 text-sky-400 shrink-0" />
+                  <span className="text-[11px] font-semibold tabular-nums text-slate-200">{mobileMonthLabel}</span>
+                </button>
+                {monthPickerOpen && (
+                  <div className="absolute left-0 top-full mt-1.5 z-50 w-[min(16rem,70vw)] rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 shadow-xl p-3">
+                    <div className="flex items-center justify-between mb-2">
+                      <button type="button" onClick={() => setPickerYear((y) => y - 1)} className="p-1.5 rounded-md text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800" aria-label="Previous year">
+                        <ChevronLeft className="w-4 h-4" />
+                      </button>
+                      <span className="text-sm font-bold text-slate-900 dark:text-white tabular-nums">{pickerYear}</span>
+                      <button type="button" onClick={() => setPickerYear((y) => Math.min(maxYear, y + 1))} disabled={pickerYear >= maxYear} className="p-1.5 rounded-md text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800 disabled:opacity-30" aria-label="Next year">
+                        <ChevronRight className="w-4 h-4" />
+                      </button>
                     </div>
-                  )}
-                </div>
+                    <div className="grid grid-cols-3 gap-1">
+                      {MONTH_SHORT.map((m, i) => {
+                        const start = new Date(`${range.start_date}T12:00:00`);
+                        const selected = start.getFullYear() === pickerYear && start.getMonth() === i;
+                        const disabled = isMonthDisabled(pickerYear, i);
+                        return (
+                          <button
+                            key={m}
+                            type="button"
+                            disabled={disabled}
+                            onClick={() => pickMonth(pickerYear, i)}
+                            className={`py-2.5 rounded-lg text-xs font-bold ${
+                              selected
+                                ? 'bg-indigo-600 text-white'
+                                : disabled
+                                  ? 'text-slate-300 dark:text-slate-600'
+                                  : 'text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800'
+                            }`}
+                          >
+                            {m}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* Mobile: Back to Home — bottom, compact width (icon + label only) */}
+            {!desktopFit && (
+              <div className="absolute bottom-0 inset-x-0 z-[80] px-3 pt-2 pb-[max(0.75rem,env(safe-area-inset-bottom))] pointer-events-none flex justify-center">
                 <button
                   type="button"
                   onClick={onClose}
-                  className="absolute top-[max(0.5rem,env(safe-area-inset-top))] right-2 z-[80] p-2 rounded-full bg-slate-900/90 border border-slate-700 text-slate-300 shadow-lg active:scale-95"
-                  aria-label="Close"
+                  className="pointer-events-auto inline-flex w-auto items-center justify-center gap-1.5 px-3 py-2.5 landscape:py-2 rounded-xl bg-indigo-600 text-white font-semibold text-sm shadow-sm hover:bg-indigo-500 active:scale-[0.99] transition"
+                  aria-label="Back to Home"
                 >
-                  <X className="w-4 h-4" />
+                  <Home className="w-4 h-4 text-white/80 shrink-0" />
+                  <span className="whitespace-nowrap">Back to Home</span>
                 </button>
-              </>
+              </div>
             )}
 
             {/* Table — desktop: scale-to-fit; mobile portrait: stretch; mobile landscape: scroll */}
@@ -653,8 +659,8 @@ export const BranchComparisonModal: React.FC<Props> = ({ open, onClose, initialR
                 desktopFit
                   ? 'overflow-hidden flex items-center justify-center'
                   : mobileNeedsScroll
-                    ? 'overflow-y-auto overflow-x-auto'
-                    : 'overflow-hidden'
+                    ? 'overflow-y-auto overflow-x-auto pb-[calc(4.25rem+env(safe-area-inset-bottom))]'
+                    : 'overflow-hidden pb-[calc(4.25rem+env(safe-area-inset-bottom))]'
               }`}
             >
               {loading ? (
