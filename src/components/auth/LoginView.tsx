@@ -3,8 +3,6 @@ import { motion } from 'motion/react';
 import { BarChart3, GitBranch, Wallet } from 'lucide-react';
 import { useUser } from '../../context/UserContext';
 
-const LOGO_SRC = '/company_logo_nobg.png';
-
 const ANALYTICS_DETAILS = [
   {
     label: 'Sales',
@@ -71,30 +69,29 @@ export const LoginView: React.FC = () => {
 
   return (
     <div className="flex h-dvh w-screen bg-slate-950 text-slate-100">
+      {/* LEFT — 3Core Analytics branding */}
       <div
-        className="hidden lg:block lg:w-2/3 h-full bg-cover bg-center relative"
+        className="hidden lg:flex lg:w-[58%] h-full bg-cover bg-center relative flex-col justify-center px-12 xl:px-16"
         style={{ backgroundImage: `url('/login-bg.png')` }}
       >
-        <div className="absolute inset-0 bg-gradient-to-br from-slate-950/70 via-indigo-950/40 to-slate-950/80" />
-        <div className="absolute bottom-10 left-10 right-10 max-w-xl">
-          <div className="flex items-center gap-3 mb-4">
+        <div className="absolute inset-0 bg-gradient-to-br from-slate-950/80 via-indigo-950/45 to-slate-950/85" />
+        <div className="relative z-10 max-w-xl">
+          <div className="mb-8">
             <img
-              src={LOGO_SRC}
-              alt="3Core"
-              className="w-11 h-11 object-contain drop-shadow-md"
+              src="/core123.png"
+              alt="Core System"
+              className="h-14 xl:h-16 w-auto object-contain drop-shadow-lg"
             />
-            <div>
-              <p className="text-indigo-300 text-xs font-bold uppercase tracking-[0.2em]">3Core Analytics</p>
-              <p className="text-slate-400 text-xs mt-0.5">Multi-branch restaurant intelligence</p>
-            </div>
+            <p className="text-slate-300 text-sm xl:text-base mt-2">
+              Unified multi-branch P&amp;L
+            </p>
           </div>
-          <h1 className="text-3xl xl:text-4xl font-bold text-white tracking-tight leading-tight">
-            Multi-Branch P&amp;L at a glance
-          </h1>
-          <p className="mt-3 text-slate-300 text-sm xl:text-base leading-relaxed">
-            Sign in to review sales, expenses, and branch performance across your restaurants — all in one system.
+
+          <p className="text-slate-300 text-sm xl:text-base leading-relaxed max-w-md">
+            Review sales, expenses, and branch performance across your restaurants — all in one system.
           </p>
-          <div className="mt-6 grid grid-cols-3 gap-3 max-w-md">
+
+          <div className="mt-8 grid grid-cols-3 gap-3 max-w-md">
             {ANALYTICS_DETAILS.map(({ label, hint, icon: Icon, iconClass, cardClass }) => (
               <div
                 key={label}
@@ -109,43 +106,27 @@ export const LoginView: React.FC = () => {
         </div>
       </div>
 
-      <div className="w-full lg:w-1/3 h-full bg-white dark:bg-slate-900 flex flex-col justify-center px-8 sm:px-12 py-10 border-l border-slate-200 dark:border-slate-800 shadow-[-10px_0_40px_rgba(0,0,0,0.25)] z-10 overflow-y-auto">
+      {/* RIGHT — Login form */}
+      <div className="w-full lg:w-[42%] h-full bg-white dark:bg-slate-900 flex flex-col justify-center px-8 sm:px-12 py-10 border-l border-slate-200 dark:border-slate-800 shadow-[-10px_0_40px_rgba(0,0,0,0.25)] z-10 overflow-y-auto">
         <motion.div
           initial={{ opacity: 0, x: 20 }}
           animate={{ opacity: 1, x: 0 }}
           transition={{ duration: 0.45 }}
           className="w-full max-w-sm mx-auto"
         >
-          <div className="flex flex-col items-start mb-8">
-            <div className="flex items-center gap-3 mb-6">
-              <img
-                src={LOGO_SRC}
-                alt="3Core logo"
-                className="w-14 h-14 sm:w-16 sm:h-16 object-contain drop-shadow-md"
-              />
-              <div className="min-w-0">
-                <p className="text-slate-900 dark:text-white font-bold text-lg tracking-tight leading-tight">
-                  3Core Analytics
-                </p>
-                <p className="text-slate-500 dark:text-slate-400 text-xs mt-0.5">
-                  Unified multi-branch P&amp;L
-                </p>
-              </div>
-            </div>
+          {/* Mobile-only brand header */}
+          <div className="lg:hidden mb-8">
+            <img
+              src="/core123.png"
+              alt="Core System"
+              className="h-11 w-auto object-contain drop-shadow-md"
+            />
+            <p className="text-slate-500 dark:text-slate-400 text-xs mt-1.5">
+              Unified multi-branch P&amp;L
+            </p>
+          </div>
 
-            <div className="w-full grid grid-cols-3 gap-2 mb-7">
-              {ANALYTICS_DETAILS.map(({ label, hint, icon: Icon, iconClass, cardClass }) => (
-                <div
-                  key={label}
-                  className={`rounded-xl border px-2 py-2.5 text-center ${cardClass}`}
-                >
-                  <Icon className={`w-3.5 h-3.5 mx-auto mb-1 opacity-90 ${iconClass}`} />
-                  <p className="text-[11px] font-bold text-slate-800 dark:text-slate-100 leading-tight">{label}</p>
-                  <p className="text-[9px] text-slate-500 dark:text-slate-400 mt-0.5 leading-tight">{hint}</p>
-                </div>
-              ))}
-            </div>
-
+          <div className="mb-8">
             <h2 className="text-3xl sm:text-4xl font-bold tracking-tight text-slate-900 dark:text-white mb-2">
               Welcome Back
             </h2>

@@ -19,12 +19,18 @@
           if (!tg) return;
           tg.ready();
           tg.expand();
-          try {
-            tg.setHeaderColor('#020617');
-            tg.setBackgroundColor('#020617');
-          } catch (e2) {}
+          // Only call APIs supported by this client version (avoids console errors on v6.0).
+          var atLeast = typeof tg.isVersionAtLeast === 'function'
+            ? function (v) { try { return tg.isVersionAtLeast(v); } catch (e) { return false; } }
+            : function () { return false; };
+          if (atLeast('6.1')) {
+            try {
+              tg.setHeaderColor('#020617');
+              tg.setBackgroundColor('#020617');
+            } catch (e2) {}
+          }
           // Bot API 8.0+: true device fullscreen when supported.
-          if (typeof tg.requestFullscreen === 'function') {
+          if (atLeast('8.0') && typeof tg.requestFullscreen === 'function') {
             try {
               tg.requestFullscreen();
             } catch (e3) {}
