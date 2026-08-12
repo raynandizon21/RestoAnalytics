@@ -127,6 +127,9 @@ export const LoginView: React.FC = () => {
           </div>
 
           <div className="mb-8">
+            <p className="text-indigo-600 dark:text-indigo-400 text-xs font-bold uppercase tracking-[0.18em] mb-2">
+              Resto Analytics
+            </p>
             <h2 className="text-3xl sm:text-4xl font-bold tracking-tight text-slate-900 dark:text-white mb-2">
               Welcome Back
             </h2>
