@@ -471,7 +471,7 @@ export const SalesAnalytics: React.FC = () => {
     : `${shortBranchLabel(branchLabel)} P&L`;
 
   return (
-    <div className={`w-full md:min-h-full flex flex-col md:grid md:grid-rows-[auto_auto_auto_auto] gap-2.5 md:gap-2 px-3 sm:px-4 py-3 md:py-2 font-sans overflow-x-hidden ${
+    <div className={`w-full md:h-full flex flex-col md:grid md:grid-rows-[auto_auto_auto_minmax(0,1fr)] gap-2.5 md:gap-2 px-3 sm:px-4 py-3 md:py-2 font-sans overflow-x-hidden ${
       isDesktop ? 'pb-2' : 'pb-[calc(4.25rem+env(safe-area-inset-bottom))]'
     }`}>
       {/* Toolbar */}
@@ -865,7 +865,7 @@ export const SalesAnalytics: React.FC = () => {
         </div>
 
       {/* Bottom: Branch + Weekday — equal card sizes */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-3 md:gap-2 md:items-stretch">
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-3 md:gap-2 md:items-stretch md:min-h-0">
         <div className="bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-800 overflow-hidden flex flex-col min-h-[280px]">
           <div className="px-3 sm:px-4 py-2 border-b border-slate-200 dark:border-slate-800 shrink-0 flex items-center justify-between gap-2">
             <h2 className="text-base font-bold text-slate-900 dark:text-white">Sales by Branch</h2>
