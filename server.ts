@@ -157,13 +157,11 @@ async function buildAdminSessionPayload(): Promise<{
   const user = (rows as any[])[0];
   if (!user) return null;
 
-  const placeholders = EXCLUDED_BRANCHES.map(() => "?").join(",");
   const [branchRows] = await pool.execute(
     `SELECT IDNo, BRANCH_CODE, BRANCH_NAME, BRANCH_LOGO, ACTIVE
      FROM branches
-     WHERE ACTIVE = 1 AND BRANCH_NAME NOT IN (${placeholders})
-     ORDER BY BRANCH_NAME ASC`,
-    EXCLUDED_BRANCHES
+     WHERE ACTIVE = 1 AND IDNo IN (${ALLOWED_BRANCH_IN})
+     ORDER BY BRANCH_NAME ASC`
   );
 
   return {
@@ -275,7 +273,14 @@ function phLocalDayRangeFilter(column: string, startDate: string, endDate: strin
   return { sql, params: [start, start, end, end] };
 }
 
-const EXCLUDED_BRANCHES = ['NOIR BY EESOME', '3Core', '3CORE'];
+/**
+ * Only these branches are fetched and computed (whitelist by branches.IDNo).
+ * Everything else (3Core, NOIR BY EESOME, Resto Demo, inactive/test) is demo/internal data.
+ *   2 = Kim's Brothers, 3 = Blue Moon, 9 = KumHo Restaurant, 10 = EESOME CAFE, 12 = PRIME BBQ
+ * Integer constants — safe to inline into SQL as `IN (${ALLOWED_BRANCH_IN})`.
+ */
+const ALLOWED_BRANCH_IDS: number[] = [2, 3, 9, 10, 12];
+const ALLOWED_BRANCH_IN = ALLOWED_BRANCH_IDS.join(",");
 
 /** Same calendar days last month (fair MTD vs MTD). Caps at last day of prev month. */
 function getPrevMonthSamePeriodRange() {
@@ -390,13 +395,11 @@ async function startServer() {
       let availableBranches: any[] = [];
 
       if (Number(user.PERMISSIONS) === 1) {
-        const placeholders = EXCLUDED_BRANCHES.map(() => "?").join(",");
         const [branchRows] = await pool.execute(
           `SELECT IDNo, BRANCH_CODE, BRANCH_NAME, BRANCH_LOGO, ACTIVE
            FROM branches
-           WHERE ACTIVE = 1 AND BRANCH_NAME NOT IN (${placeholders})
-           ORDER BY BRANCH_NAME ASC`,
-          EXCLUDED_BRANCHES
+           WHERE ACTIVE = 1 AND IDNo IN (${ALLOWED_BRANCH_IN})
+           ORDER BY BRANCH_NAME ASC`
         );
         availableBranches = branchRows as any[];
       } else {
@@ -519,10 +522,8 @@ async function startServer() {
   // ─── Branches ───
   app.get("/api/branches", async (_req, res) => {
     try {
-      const placeholders = EXCLUDED_BRANCHES.map(() => '?').join(',');
       const [rows] = await pool.execute(
-        `SELECT IDNo as id, BRANCH_CODE as code, BRANCH_NAME as name, BRANCH_LOGO as logo FROM branches WHERE ACTIVE = 1 AND BRANCH_NAME NOT IN (${placeholders}) ORDER BY BRANCH_NAME`,
-        EXCLUDED_BRANCHES
+        `SELECT IDNo as id, BRANCH_CODE as code, BRANCH_NAME as name, BRANCH_LOGO as logo FROM branches WHERE ACTIVE = 1 AND IDNo IN (${ALLOWED_BRANCH_IN}) ORDER BY BRANCH_NAME`
       );
       res.json({ success: true, data: rows });
     } catch (err: any) {
@@ -542,7 +543,6 @@ async function startServer() {
       const branchIdFilter = req.query.branch_id ? Number(req.query.branch_id) : null;
       const billingRange = phLocalDayRangeFilter("b.ENCODED_DT", start_date, end_date);
       const expenseRange = phLocalDayRangeFilter("e.ENCODED_DT", start_date, end_date);
-      const excludedPlaceholders = EXCLUDED_BRANCHES.map(() => "?").join(",");
 
       // 1) Branch sales — same formula as restoAdmin pyserver branch_sales (paid − refund, orders-gated)
       let salesQuery = `
@@ -561,9 +561,9 @@ async function startServer() {
           ${billingRange.sql}
         LEFT JOIN orders o ON o.IDNo = b.ORDER_ID AND o.STATUS NOT IN (-1, -2)
         WHERE br.ACTIVE = 1
-          AND br.BRANCH_NAME NOT IN (${excludedPlaceholders})
+          AND br.IDNo IN (${ALLOWED_BRANCH_IN})
       `;
-      const salesParams: any[] = [...billingRange.params, ...EXCLUDED_BRANCHES];
+      const salesParams: any[] = [...billingRange.params];
       if (branchIdFilter) {
         salesQuery += ` AND br.IDNo = ?`;
         salesParams.push(branchIdFilter);
@@ -583,6 +583,7 @@ async function startServer() {
             COALESCE(SUM(AMOUNT), 0) AS day_total
           FROM cash_reconciliation
           WHERE ACTIVE = 1
+            AND BRANCH_ID IN (${ALLOWED_BRANCH_IN})
             AND BUSINESS_DATE >= ?
             AND BUSINESS_DATE <= ?
         `;
@@ -619,12 +620,12 @@ async function startServer() {
         INNER JOIN orders o ON o.IDNo = b.ORDER_ID AND o.STATUS NOT IN (-1, -2)
         INNER JOIN branches br ON br.IDNo = b.BRANCH_ID
           AND br.ACTIVE = 1
-          AND br.BRANCH_NAME NOT IN (${excludedPlaceholders})
+          AND br.IDNo IN (${ALLOWED_BRANCH_IN})
         WHERE b.STATUS IN (1, 2)
           AND b.STATUS NOT IN (-1, -2)
           ${billingRange.sql}
       `;
-      const dailyParams: any[] = [...EXCLUDED_BRANCHES, ...billingRange.params];
+      const dailyParams: any[] = [...billingRange.params];
       if (branchIdFilter) {
         dailyQuery += ` AND b.BRANCH_ID = ?`;
         dailyParams.push(branchIdFilter);
@@ -661,10 +662,10 @@ async function startServer() {
         WHERE e.ACTIVE = 1
           AND oc.ACTIVE = 1
           AND b2.ACTIVE = 1
-          AND b2.BRANCH_NAME NOT IN (${excludedPlaceholders})
+          AND b2.IDNo IN (${ALLOWED_BRANCH_IN})
           ${expenseRange.sql}
       `;
-      const expParams: any[] = [...EXCLUDED_BRANCHES, ...expenseRange.params];
+      const expParams: any[] = [...expenseRange.params];
       if (branchIdFilter) {
         expenseQuery += ` AND e.BRANCH_ID = ?`;
         expParams.push(branchIdFilter);
@@ -687,10 +688,10 @@ async function startServer() {
         WHERE e.ACTIVE = 1
           AND oc.ACTIVE = 1
           AND b2.ACTIVE = 1
-          AND b2.BRANCH_NAME NOT IN (${excludedPlaceholders})
+          AND b2.IDNo IN (${ALLOWED_BRANCH_IN})
           ${expenseRange.sql}
       `;
-      const expCatParams: any[] = [...EXCLUDED_BRANCHES, ...expenseRange.params];
+      const expCatParams: any[] = [...expenseRange.params];
       if (branchIdFilter) {
         expCatQuery += ` AND e.BRANCH_ID = ?`;
         expCatParams.push(branchIdFilter);
@@ -710,7 +711,7 @@ async function startServer() {
         JOIN orders o ON oi.ORDER_ID = o.IDNo AND o.STATUS NOT IN (-1, -2)
         JOIN billing b ON b.ORDER_ID = o.IDNo AND b.STATUS IN (1, 2) AND b.STATUS NOT IN (-1, -2)
         JOIN menu m ON oi.MENU_ID = m.IDNo
-        WHERE 1=1
+        WHERE b.BRANCH_ID IN (${ALLOWED_BRANCH_IN})
           ${billingRange.sql}
       `;
       const topParams: any[] = [...billingRange.params];
@@ -737,10 +738,10 @@ async function startServer() {
         WHERE e.ACTIVE = 1
           AND oc.ACTIVE = 1
           AND b2.ACTIVE = 1
-          AND b2.BRANCH_NAME NOT IN (${excludedPlaceholders})
+          AND b2.IDNo IN (${ALLOWED_BRANCH_IN})
           ${expenseRange.sql}
       `;
-      const dailyExpParams: any[] = [...EXCLUDED_BRANCHES, ...expenseRange.params];
+      const dailyExpParams: any[] = [...expenseRange.params];
       if (branchIdFilter) {
         dailyExpQuery += ` AND e.BRANCH_ID = ?`;
         dailyExpParams.push(branchIdFilter);
@@ -899,10 +900,10 @@ async function startServer() {
           WHERE e.ACTIVE = 1
             AND oc.ACTIVE = 1
             AND b2.ACTIVE = 1
-            AND b2.BRANCH_NAME NOT IN (${excludedPlaceholders})
+            AND b2.IDNo IN (${ALLOWED_BRANCH_IN})
             ${expenseRange.sql}
         `;
-        const rentSalParams: any[] = [...EXCLUDED_BRANCHES, ...expenseRange.params];
+        const rentSalParams: any[] = [...expenseRange.params];
         if (branchIdFilter) {
           rentSalQuery += ` AND e.BRANCH_ID = ?`;
           rentSalParams.push(branchIdFilter);
@@ -955,9 +956,9 @@ async function startServer() {
           : "";
 
       const baseParams: any[] = [start_date, end_date];
-      let branchSql = "";
+      let branchSql = ` AND b.BRANCH_ID IN (${ALLOWED_BRANCH_IN})`;
       if (branchId) {
-        branchSql = ` AND b.BRANCH_ID = ?`;
+        branchSql += ` AND b.BRANCH_ID = ?`;
         baseParams.push(branchId);
       }
 
@@ -1077,10 +1078,10 @@ async function startServer() {
         (menuName && menuName.trim().toUpperCase() === "ROOM CHARGE");
 
       if (isRoomCharge) {
-        let branchSql = "";
+        let branchSql = ` AND b.BRANCH_ID IN (${ALLOWED_BRANCH_IN})`;
         const params: any[] = [start_date, end_date];
         if (branchId) {
-          branchSql = ` AND b.BRANCH_ID = ?`;
+          branchSql += ` AND b.BRANCH_ID = ?`;
           params.push(branchId);
         }
         // Same params for both UNION branches
@@ -1140,6 +1141,7 @@ async function startServer() {
         JOIN billing b ON b.ORDER_ID = o.IDNo AND b.STATUS IN (1, 2)
         JOIN menu m ON oi.MENU_ID = m.IDNo
         WHERE DATE(b.ENCODED_DT) BETWEEN ? AND ?
+          AND b.BRANCH_ID IN (${ALLOWED_BRANCH_IN})
       `;
       const params: any[] = [start_date, end_date];
       if (menuId) {
@@ -1184,6 +1186,7 @@ async function startServer() {
         INNER JOIN orders o ON o.IDNo = b.ORDER_ID AND o.STATUS NOT IN (-1, -2)
         WHERE b.STATUS IN (1, 2)
           AND b.STATUS NOT IN (-1, -2)
+          AND b.BRANCH_ID IN (${ALLOWED_BRANCH_IN})
           ${billingRange.sql}
       `;
       const params: any[] = [...billingRange.params];
@@ -1234,10 +1237,10 @@ async function startServer() {
         LEFT JOIN billing b ON b.BRANCH_ID = b2.IDNo
           AND b.STATUS IN (1, 2)
           AND DATE(b.ENCODED_DT) BETWEEN ? AND ?
-        WHERE b2.ACTIVE = 1 AND b2.BRANCH_NAME NOT IN (${EXCLUDED_BRANCHES.map(() => '?').join(',')})
+        WHERE b2.ACTIVE = 1 AND b2.IDNo IN (${ALLOWED_BRANCH_IN})
         GROUP BY b2.IDNo, b2.BRANCH_NAME
         ORDER BY net_sales DESC`,
-        [start_date, end_date, ...EXCLUDED_BRANCHES]
+        [start_date, end_date]
       );
       res.json({ success: true, data: rows });
     } catch (err: any) {
@@ -1257,6 +1260,7 @@ async function startServer() {
         SELECT COALESCE(SUM(e.EXP_AMOUNT), 0) as total_expense
         FROM expenses e
         WHERE e.ACTIVE = 1 AND DATE(e.ENCODED_DT) BETWEEN ? AND ?
+          AND e.BRANCH_ID IN (${ALLOWED_BRANCH_IN})
       `;
       const params: any[] = [start_date, end_date];
       if (branchId) {
@@ -1288,6 +1292,7 @@ async function startServer() {
         FROM expenses e
         LEFT JOIN master_categories mc ON e.MASTER_CAT_ID = mc.IDNo
         WHERE e.ACTIVE = 1 AND DATE(e.ENCODED_DT) BETWEEN ? AND ?
+          AND e.BRANCH_ID IN (${ALLOWED_BRANCH_IN})
       `;
       const params: any[] = [start_date, end_date];
       if (branchId) {
@@ -1309,7 +1314,6 @@ async function startServer() {
       const cur = getCurrentMonthRange();
       const prev = getPrevMonthSamePeriodRange();
       const branchIdFilter = req.query.branch_id ? Number(req.query.branch_id) : null;
-      const excl = EXCLUDED_BRANCHES.map(() => "?").join(",");
 
       async function loadPeriod(start_date: string, end_date: string) {
         let salesQ = `
@@ -1322,9 +1326,9 @@ async function startServer() {
           LEFT JOIN billing b ON b.BRANCH_ID = b2.IDNo
             AND b.STATUS IN (1, 2)
             AND DATE(b.ENCODED_DT) BETWEEN ? AND ?
-          WHERE b2.ACTIVE = 1 AND b2.BRANCH_NAME NOT IN (${excl})
+          WHERE b2.ACTIVE = 1 AND b2.IDNo IN (${ALLOWED_BRANCH_IN})
         `;
-        const salesParams: any[] = [start_date, end_date, ...EXCLUDED_BRANCHES];
+        const salesParams: any[] = [start_date, end_date];
         if (branchIdFilter) {
           salesQ += ` AND b2.IDNo = ?`;
           salesParams.push(branchIdFilter);
@@ -1337,9 +1341,9 @@ async function startServer() {
           JOIN branches b2 ON e.BRANCH_ID = b2.IDNo
           WHERE e.ACTIVE = 1
             AND DATE(e.ENCODED_DT) BETWEEN ? AND ?
-            AND b2.ACTIVE = 1 AND b2.BRANCH_NAME NOT IN (${excl})
+            AND b2.ACTIVE = 1 AND b2.IDNo IN (${ALLOWED_BRANCH_IN})
         `;
-        const expParams: any[] = [start_date, end_date, ...EXCLUDED_BRANCHES];
+        const expParams: any[] = [start_date, end_date];
         if (branchIdFilter) {
           expQ += ` AND e.BRANCH_ID = ?`;
           expParams.push(branchIdFilter);
@@ -1464,7 +1468,6 @@ async function startServer() {
         ? { start_date: req.query.start_date as string, end_date: req.query.end_date as string }
         : getCurrentMonthRange();
 
-      const excl = EXCLUDED_BRANCHES.map(() => "?").join(",");
       const billingRange = phLocalDayRangeFilter("b.ENCODED_DT", start_date, end_date);
       const [rows] = await pool.execute(
         `SELECT
@@ -1490,11 +1493,11 @@ async function startServer() {
           AND b.STATUS NOT IN (-1, -2)
           ${billingRange.sql}
         LEFT JOIN orders o ON o.IDNo = b.ORDER_ID AND o.STATUS NOT IN (-1, -2)
-        WHERE br.ACTIVE = 1 AND br.BRANCH_NAME NOT IN (${excl})
+        WHERE br.ACTIVE = 1 AND br.IDNo IN (${ALLOWED_BRANCH_IN})
         GROUP BY br.IDNo, br.BRANCH_NAME, sale_date, day_name
         HAVING sale_date IS NOT NULL
         ORDER BY br.BRANCH_NAME, sale_date`,
-        [...billingRange.params, ...EXCLUDED_BRANCHES]
+        [...billingRange.params]
       );
       res.json({ success: true, data: rows });
     } catch (err: any) {
