@@ -987,7 +987,10 @@ export const SalesAnalytics: React.FC = () => {
                           c.isToday ? 'text-indigo-500 dark:text-indigo-300' : c.isFuture ? 'text-slate-600' : ''
                         }`}
                       >
-                        <div className="leading-tight">{c.name}</div>
+                        <div className="leading-tight truncate">
+                          <span className="sm:hidden">{c.name.slice(0, 3)}</span>
+                          <span className="hidden sm:inline">{c.name}</span>
+                        </div>
                         <div className={`text-[11px] sm:text-xs font-semibold tabular-nums mt-0.5 ${
                           c.isToday ? 'text-indigo-400' : 'text-slate-500'
                         }`}>{c.dayNum}</div>
